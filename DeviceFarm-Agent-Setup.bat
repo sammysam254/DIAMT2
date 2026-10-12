@@ -35,15 +35,17 @@ echo [*] Install directory : %INSTALL_DIR%
 echo [*] Source repository : %REPO_URL%
 echo.
 
-:: ── Auto-close EVERYTHING before running (cloudflared, electron, scrcpy, adb, watchdog, port 7400) ──
-echo [*] Terminating all previous agent processes, tunnels, and releasing ports...
-taskkill /F /IM cloudflared.exe /T >nul 2>&1
-taskkill /F /IM electron.exe /T >nul 2>&1
-taskkill /F /IM scrcpy.exe /T >nul 2>&1
-taskkill /F /IM adb.exe /T >nul 2>&1
+:: ── Auto-close target developer processes before running ─────────────────
+echo [*] Stopping previous developer processes...
 "%PS%" -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Get-NetTCPConnection -LocalPort 7400 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } catch {} };" ^
-  "Get-CimInstance Win32_Process | Where-Object { ($_.Name -like 'node*' -and $_.CommandLine -and ($_.CommandLine.IndexOf('service-watchdog.js') -ge 0 -or $_.CommandLine.IndexOf('DeviceFarm') -ge 0 -or $_.CommandLine.IndexOf('devicefarm-agent') -ge 0)) } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }" >nul 2>&1
+  "$myParentPid = (Get-CimInstance Win32_Process -Filter \"ProcessId = $PID\").ParentProcessId; " ^
+  "$processesToKill = @('electron', 'adb', 'node', 'git', 'cmd', 'powershell', 'pwsh'); " ^
+  "foreach ($procName in $processesToKill) { " ^
+  "    Get-Process -Name $procName -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID -and $_.Id -ne $myParentPid } | Stop-Process -Force -ErrorAction SilentlyContinue " ^
+  "}; " ^
+  "Write-Host '[+] Target developer processes stopped successfully!' -ForegroundColor Green"
+taskkill /F /IM cloudflared.exe /T >nul 2>&1
+taskkill /F /IM scrcpy.exe /T >nul 2>&1
 timeout /t 2 /nobreak >nul
 
 
