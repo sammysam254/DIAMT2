@@ -335,7 +335,7 @@ class ScrcpyEngine extends EventEmitter {
       'video_bit_rate=1200000',
       'max_size=560',
       'max_fps=60',
-      'video_codec_options=i-frame-interval=1',
+      'video_codec_options=profile=1,i-frame-interval=1',
       'send_frame_meta=true',
       'show_touches=false',
       'stay_awake=true',

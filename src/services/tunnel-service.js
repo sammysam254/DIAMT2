@@ -121,7 +121,7 @@ function ensureCloudflaredAvailable() {
 
 /** Regex to capture trycloudflare.com URL (excluding Cloudflare internal api.trycloudflare.com) */
 const TUNNEL_URL_REGEX = /https?:\/\/(?!api\.)[a-zA-Z0-9-]+\.trycloudflare\.com/;
-const TUNNEL_TIMEOUT_MS = 15000;
+const TUNNEL_TIMEOUT_MS = 25000;
 let activeTokenTunnelProcess = null;
 
 function createCloudflaredTunnel(port) {
@@ -147,7 +147,7 @@ function createCloudflaredTunnel(port) {
 
     const args = token 
       ? ['tunnel', 'run', '--token', token]
-      : ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate', '--protocol', 'http2'];
+      : ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'];
 
     try {
       const tunnelProcess = spawn(binPath, args, {

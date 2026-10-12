@@ -1508,6 +1508,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
     isNativeTouchActive = false;
     e.preventDefault();
     const c = coords(e);
+    if (Math.abs(c.x - lastX) >= 1 || Math.abs(c.y - lastY) >= 1) {
+      send({ type: 'touch', action: 2, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.5 });
+    }
     send({ type: 'touch', action: 1, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0 });
   }
 
@@ -1554,6 +1557,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
       activePointerId = null;
     }
     const c = coords(e);
+    if (Math.abs(c.x - lastX) >= 1 || Math.abs(c.y - lastY) >= 1) {
+      send({ type: 'touch', action: 2, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.5 });
+    }
     send({ type: 'touch', action: 1, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0 });
   }
 
