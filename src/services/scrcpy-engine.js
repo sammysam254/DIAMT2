@@ -332,9 +332,9 @@ class ScrcpyEngine extends EventEmitter {
       'cleanup=false',
       'send_dummy_byte=true',
       'video_source=display',
-      'video_bit_rate=2000000',
-      'max_size=1080',
-      'max_fps=40',
+      'video_bit_rate=4000000',
+      'max_size=1920',
+      'max_fps=60',
       'video_codec_options=i-frame-interval=1',
       'send_frame_meta=true',
       'show_touches=false',
@@ -424,11 +424,16 @@ class ScrcpyEngine extends EventEmitter {
     this._fallbackActive = true;
     logger.info(`[ScrcpyEngine ${this.serial}] Starting hardware screenrecord fallback...`);
 
+    const isLandscape = (this.scrcpyVideoWidth && this.scrcpyVideoHeight)
+      ? (this.scrcpyVideoWidth > this.scrcpyVideoHeight)
+      : (this.screenWidth > this.screenHeight);
+    const fallbackSize = isLandscape ? '1280x720' : '720x1280';
+
     const args = [
       '-s', this.serial, 'exec-out',
       'screenrecord',
       '--output-format=h264',
-      '--size', '720x1280',
+      '--size', fallbackSize,
       '--bit-rate', '2500000',
       '-'
     ];
@@ -630,25 +635,40 @@ class ScrcpyEngine extends EventEmitter {
 
         if (isSps || (isConfig && !this._configPacket)) {
           this._configPacket = Buffer.from(payload);
-          logger.info(`[ScrcpyEngine ${this.serial}] SPS/PPS config cached (${payload.length} bytes)`);
 
-          // Use SPS NAL as resolution fallback only if scrcpy header didn't specify width/height.
-          // Note: SPS macroblock calculation rounds to 16px multiples without frame crop offsets,
-          // whereas scrcpy header gives the exact encoder display size required by Controller.java.
-          if (!this.scrcpyVideoWidth || !this.scrcpyVideoHeight) {
-            try {
-              const spsW = parseSpsWidth(payload);
-              const spsH = parseSpsHeight(payload);
-              if (spsW > 16 && spsH > 16 && spsW < 10000 && spsH < 10000) {
+          // Parse true encoder dimensions directly from SPS NAL
+          try {
+            const spsW = parseSpsWidth(payload);
+            const spsH = parseSpsHeight(payload);
+            if (spsW > 16 && spsH > 16 && spsW < 10000 && spsH < 10000) {
+              const prevW = this.scrcpyVideoWidth;
+              const prevH = this.scrcpyVideoHeight;
+
+              // Check if resolution or orientation changed (e.g. phone/tablet rotation via 3rd party apps)
+              const hasChanged = (!prevW || !prevH || prevW !== spsW || prevH !== spsH);
+              if (hasChanged) {
                 this.scrcpyVideoWidth = spsW;
                 this.scrcpyVideoHeight = spsH;
                 this.videoWidth  = spsW;
                 this.videoHeight = spsH;
-                logger.info(`[ScrcpyEngine ${this.serial}] Fallback SPS resolution: ${spsW}x${spsH}`);
+                this._keyframeBuffer = null; // Clear old orientation keyframe cache
+                logger.info(`[ScrcpyEngine ${this.serial}] Active video resolution: ${spsW}x${spsH} (prev: ${prevW}x${prevH})`);
+
+                // Broadcast resolution change to all connected WebSocket clients
+                const changeMsg = Buffer.from(JSON.stringify({
+                  type: 'resolution_change',
+                  width: spsW,
+                  height: spsH,
+                }));
+                for (const ws of this.wsClients) {
+                  if (ws.readyState === 1) {
+                    try { ws.send(changeMsg); } catch (_) {}
+                  }
+                }
               }
-            } catch (err) {
-              logger.warn(`[ScrcpyEngine ${this.serial}] SPS parse error: ${err.message}`);
             }
+          } catch (err) {
+            logger.warn(`[ScrcpyEngine ${this.serial}] SPS parse error: ${err.message}`);
           }
         }
 

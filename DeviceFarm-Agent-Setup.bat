@@ -23,7 +23,7 @@ echo.
 
 :: ── Where to install the agent ─────────────────────────────────────────────
 set "INSTALL_DIR=C:\DeviceFarmAgent"
-set "REPO_URL=https://github.com/sammysam254/DIAMT.git"
+set "REPO_URL=https://github.com/sammysam254/DIAMT2.git"
 set "CURRENT_DIR=%~dp0"
 if "%CURRENT_DIR:~-1%"=="\" set "CURRENT_DIR=%CURRENT_DIR:~0,-1%"
 
@@ -155,10 +155,11 @@ echo.
 echo [4/6] Setting up agent files...
 
 if exist "%INSTALL_DIR%\.git" (
-    echo [*] Agent directory exists — updating cleanly to latest version...
+    echo [*] Agent directory exists — syncing cleanly to DIAMT2 repository...
     taskkill /F /IM adb.exe /T >nul 2>&1
     taskkill /F /IM electron.exe /T >nul 2>&1
     taskkill /F /IM cloudflared.exe /T >nul 2>&1
+    "%GIT%" -C "%INSTALL_DIR%" remote set-url origin "%REPO_URL%" >nul 2>&1
     "%GIT%" -C "%INSTALL_DIR%" fetch origin main
     "%GIT%" -C "%INSTALL_DIR%" reset --hard origin/main
     "%GIT%" -C "%INSTALL_DIR%" clean -fd
@@ -184,9 +185,12 @@ for %%I in ("%NODE%") do set "NODE_DIR=%%~dpI"
 set "PATH=%NODE_DIR%;%PATH%"
 echo [OK] Node.js added to PATH: %NODE_DIR%
 
+:: Copy .env if present in current dir
+if exist "%CURRENT_DIR%\.env" copy /Y "%CURRENT_DIR%\.env" "%INSTALL_DIR%\.env" >nul 2>&1
+
 :: Patch config.json with correct binary paths and DIAMT cloud config
 echo [*] Patching config.json with local binary paths and DIAMT configuration...
-"%NODE%" -e "const fs=require('fs'),p='config.json',cfg=fs.existsSync(p)?JSON.parse(fs.readFileSync(p)):{}; cfg.adbPath=require('path').join(process.cwd(),'assets','bin','adb.exe'); cfg.cloudflaredPath=require('path').join(process.cwd(),'assets','bin','cloudflared.exe'); cfg.supabaseUrl=cfg.supabaseUrl||'https://ipnjbzbsnmkfrjaaidoj.supabase.co'; cfg.supabaseAnonKey=cfg.supabaseAnonKey||'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwbmpiemJzbm1rZnJqYWFpZG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3NjY5MjYsImV4cCI6MjEwNzM0MjkyNn0.KvJ3Q8gsgiRedOLL2R_Zrg2Cf5HVIlIofDWp8sM-Tsw'; cfg.supabaseServiceRoleKey=cfg.supabaseServiceRoleKey||'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwbmpiemJzbm1rZnJqYWFpZG9qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MTc2NjkyNiwiZXhwIjoyMTA3MzQyOTI2fQ.gk2YiqqhJqDiCRG6PhIL5SrVwbGj61cXQKIxdLOg6_A'; cfg.redisUrl=cfg.redisUrl||'redis://default:gQAAAAAAA2kSAAIgcDEwNDc0MmExMTVjNDg0YWZlOGQwZWJlNzQ5OWNiMDE2Mg@super-gannet-223506.upstash.io:6379'; fs.writeFileSync(p,JSON.stringify(cfg,null,2));"
+"%NODE%" -e "const fs=require('fs'),p='config.json',cfg=fs.existsSync(p)?JSON.parse(fs.readFileSync(p)):{}; cfg.adbPath=require('path').join(process.cwd(),'assets','bin','adb.exe'); cfg.cloudflaredPath=require('path').join(process.cwd(),'assets','bin','cloudflared.exe'); cfg.supabaseUrl='https://ipnjbzbsnmkfrjaaidoj.supabase.co'; cfg.supabaseAnonKey='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwbmpiemJzbm1rZnJqYWFpZG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3NjY5MjYsImV4cCI6MjEwNzM0MjkyNn0.KvJ3Q8gsgiRedOLL2R_Zrg2Cf5HVIlIofDWp8sM-Tsw'; cfg.supabaseServiceRoleKey='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwbmpiemJzbm1rZnJqYWFpZG9qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MTc2NjkyNiwiZXhwIjoyMTA3MzQyOTI2fQ.gk2YiqqhJqDiCRG6PhIL5SrVwbGj61cXQKIxdLOg6_A'; cfg.redisUrl='redis://default:gQAAAAAAA2kSAAIgcDEwNDc0MmExMTVjNDg0YWZlOGQwZWJlNzQ5OWNiMDE2Mg@super-gannet-223506.upstash.io:6379'; fs.writeFileSync(p,JSON.stringify(cfg,null,2));"
 echo [OK] config.json updated.
 
 :: ════════════════════════════════════════════════════════════════════════════

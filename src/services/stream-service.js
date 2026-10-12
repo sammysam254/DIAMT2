@@ -834,88 +834,69 @@ function buildPlayerHtml(serial, screenW, screenH) {
   <title>Stream ${serial}</title>
   <style>
     *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
-    html,body{height:100%;background:#04060a;color:#f8fafc;font-family:system-ui;overflow:hidden}
-    body{display:flex;flex-direction:column;align-items:center;padding:0;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+    html,body{height:100%;width:100%;background:#000;color:#f8fafc;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;overflow:hidden}
+    body{display:flex;flex-direction:row;align-items:stretch;justify-content:center;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+
+    /* Main Phone/Tablet Viewing Stage */
+    .stage{flex:1;height:100vh;width:calc(100vw - 52px);min-width:0;display:flex;align-items:center;justify-content:center;background:#000;position:relative;overflow:hidden}
+    .wrap{position:relative;display:flex;align-items:center;justify-content:center;height:100vh;width:100%;background:#000;overflow:hidden;touch-action:none}
     
-    /* Top Header Bar inside window */
-    .header{display:flex;align-items:center;justify-content:space-between;width:100%;padding:8px 12px;background:rgba(15,23,42,.95);border-bottom:1px solid rgba(255,255,255,.1);flex-shrink:0;z-index:10}
-    .hdr-left{display:flex;align-items:center;gap:10px}
-    .hdr-title{font-weight:700;font-size:14px;color:#f8fafc;letter-spacing:.3px}
-    .hdr-btn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#f8fafc;border-radius:8px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer;transition:all .15s ease}
-    .hdr-btn:hover{background:rgba(56,189,248,.25);border-color:rgba(56,189,248,.5);color:#38bdf8}
-    .hdr-btn:active{transform:scale(.92)}
+    /* Enlarged Canvas: fills 100vh cleanly with natural aspect ratio, expands wide for tablets/landscape */
+    canvas{display:block;height:100vh;max-height:100vh;width:auto;max-width:calc(100vw - 52px);object-fit:contain;cursor:default;touch-action:none;-webkit-tap-highlight-color:transparent}
 
-    .badge{background:rgba(56,189,248,.15);color:#38bdf8;border:1px solid rgba(56,189,248,.3);padding:3px 10px;border-radius:100px;font-size:11px;font-weight:700;display:flex;align-items:center;gap:5px}
-    .dot{width:6px;height:6px;background:#38bdf8;border-radius:50%;animation:pulse 1s infinite}
-    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-
-    .stage{flex:1;display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:0;padding:8px}
-    .wrap{position:relative;background:#000;border-radius:18px;border:2px solid rgba(56,189,248,.4);box-shadow:0 0 30px rgba(56,189,248,.2);overflow:hidden;touch-action:none;flex-shrink:0;-webkit-tap-highlight-color:transparent}
-    canvas{display:block;max-height:calc(100vh - 60px);width:auto;cursor:default;touch-action:none;-webkit-tap-highlight-color:transparent}
-
-    /* Sidebar ALWAYS on the right side */
-    .sidebar{display:flex !important;flex-direction:column;align-items:center;gap:5px;background:rgba(15,23,42,.95);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:8px 5px;max-height:calc(100vh - 52px);overflow-y:auto;flex-shrink:0;box-shadow:0 10px 25px rgba(0,0,0,.5);z-index:10}
-    .btn{width:36px;height:36px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);color:#f1f5f9;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer;transition:all .15s ease;user-select:none}
+    /* Sleek Right Sidebar flush against edge */
+    .sidebar{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:6px;width:50px;background:rgba(18,22,34,.98);border-left:1px solid rgba(255,255,255,.08);padding:8px 4px;height:100vh;overflow-y:auto;overflow-x:hidden;flex-shrink:0;z-index:20;box-shadow:-5px 0 25px rgba(0,0,0,.6)}
+    .btn{width:38px;height:38px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:#e2e8f0;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer;transition:all .15s ease;user-select:none;flex-shrink:0}
     .btn:hover{background:rgba(56,189,248,.25);border-color:rgba(56,189,248,.5);color:#38bdf8}
-    .btn:active{transform:scale(.88)}
-    .btn-red{background:rgba(248,113,113,.12);color:#f87171;border-color:rgba(248,113,113,.3)}
-    .btn-red:hover{background:rgba(248,113,113,.3);border-color:rgba(248,113,113,.6);color:#ef4444}
+    .btn:active{transform:scale(.9)}
+    .btn-red{background:rgba(239,68,68,.14);color:#f87171;border-color:rgba(239,68,68,.3)}
+    .btn-red:hover{background:rgba(239,68,68,.35);border-color:rgba(239,68,68,.7);color:#ffffff}
     
-    .vol-slider-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px 0 2px;width:100%}
+    .vol-slider-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 0 4px;width:100%;flex-shrink:0}
     .volume-slider-v{-webkit-appearance:slider-vertical;appearance:slider-vertical;writing-mode:bt-lr;width:6px;height:75px;background:rgba(255,255,255,.15);border-radius:4px;outline:none;cursor:pointer;accent-color:#22c55e}
 
-    .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);z-index:20;align-items:center;justify-content:center}
+    /* Red Circular Floating Rotate Button (Matching Screenshot) */
+    .btn-floating-rotate{position:fixed;bottom:18px;right:64px;width:48px;height:48px;border-radius:50%;background:#dc2626;color:#ffffff;border:2px solid rgba(255,255,255,.25);box-shadow:0 6px 20px rgba(220,38,38,.55);display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:40;transition:transform .15s ease,background .15s ease}
+    .btn-floating-rotate:hover{background:#ef4444;transform:scale(1.08) rotate(15deg)}
+    .btn-floating-rotate:active{transform:scale(.92)}
+
+    /* Modals */
+    .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);z-index:100;align-items:center;justify-content:center}
     .mbox{background:#0f172a;border:1px solid rgba(56,189,248,.4);border-radius:14px;padding:18px;width:90%;max-width:380px;box-shadow:0 20px 30px rgba(0,0,0,.6)}
     .minput{width:100%;padding:9px 12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);border-radius:9px;color:#fff;font-size:14px;margin-bottom:12px;outline:none}
     .mbtn{width:100%;padding:9px;background:#38bdf8;color:#0f172a;border:none;border-radius:9px;font-weight:700;cursor:pointer}
-
-    .mobile-nav{display:none !important}
-    .stage{flex:1;display:flex;flex-direction:row !important;align-items:center;justify-content:center;gap:10px;width:100%;min-height:0;padding:6px 10px}
-    canvas{display:block;max-height:calc(100vh - 55px);max-width:calc(100vw - 65px);width:auto;height:auto;cursor:default;touch-action:none;-webkit-tap-highlight-color:transparent}
   </style>
 </head>
 <body>
-
-<!-- Header Bar -->
-<div class="header">
-  <div class="hdr-left">
-    <button tabindex="-1" onfocus="this.blur()" class="hdr-btn" onclick="if(history.length>1)history.back();else window.close()" title="Back">&#x2190;</button>
-    <div class="hdr-title" id="hdrTitle">Stream ${serial}</div>
-  </div>
-  <div style="display:flex;align-items:center;gap:8px">
-    <button tabindex="-1" onfocus="this.blur()" class="hdr-btn" onclick="reconnectStream()" title="Refresh Stream"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="hdr-btn" onclick="toggleDebugModal()" title="Stream Diagnostics"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="hdr-btn" onclick="popOutWindow()" title="Pop Out Chrome Window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
-    <div class="badge" id="badge"><span class="dot"></span><span id="modeText">CONNECTING</span></div>
-    <span style="font-size:10px;color:#64748b;font-family:monospace" id="fps">--fps</span>
-  </div>
-</div>
 
 <div class="stage">
   <div class="wrap" id="wrap">
     <canvas id="c" width="${screenW}" height="${screenH}"></canvas>
   </div>
+</div>
 
-  <!-- Sleek Dark Control Sidebar (Right Side) -->
-  <div class="sidebar">
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="expandNotifications()" title="Notification Bar"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn btn-red" onclick="key(26)" title="Power"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn btn-red" onclick="reboot()" title="Reboot Device"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn btn-red" onclick="rotateScreen()" title="Rotate Screen"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(24)" title="Volume Up"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="19" y1="12" x2="19" y2="12"/><line x1="15" y1="9" x2="15" y2="15"/><line x1="12" y1="12" x2="18" y2="12"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(25)" title="Volume Down"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="15" y1="12" x2="20" y2="12"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(4)" title="Back"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(3)" title="Home"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(187)" title="Recents"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="screenshot()" title="Screenshot"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="openText()" title="Send Text"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="7" y1="16" x2="17" y2="16"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="openUpload()" title="Upload File"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
-    <button tabindex="-1" onfocus="this.blur()" class="btn" id="muteBtn" onclick="toggleMute()" title="Audio Mute/Unmute"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></button>
-    
-    <!-- Vertical Green Volume Slider -->
-    <div class="vol-slider-box" title="Volume Slider">
-      <input tabindex="-1" onfocus="this.blur()" type="range" min="0" max="100" value="100" class="volume-slider-v" id="volSlider" oninput="setVolume(this.value)"/>
-    </div>
+<!-- Floating Red Rotate Button (Matches user screenshot) -->
+<button tabindex="-1" onfocus="this.blur()" class="btn-floating-rotate" onclick="rotateScreen()" title="Rotate Screen (Orientation Switch)">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+</button>
+
+<!-- Sleek Dark Control Sidebar (Right Side) -->
+<div class="sidebar">
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="toggleDebugModal()" title="Options & Diagnostics"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn btn-red" onclick="key(26)" title="Power"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(24)" title="Volume Up"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="19" y1="12" x2="19" y2="12"/><line x1="15" y1="9" x2="15" y2="15"/><line x1="12" y1="12" x2="18" y2="12"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(25)" title="Volume Down"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="15" y1="12" x2="20" y2="12"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(4)" title="Back"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="17 4 7 12 17 20 17 4"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(3)" title="Home"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="8"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(187)" title="Recents / App Switcher"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="screenshot()" title="Take Screenshot"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="openText()" title="Send Text"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="7" y1="16" x2="17" y2="16"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="openUpload()" title="Upload File to Phone"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" id="muteBtn" onclick="toggleMute()" title="Mute/Unmute Audio"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></button>
+  
+  <!-- Vertical Green Volume Slider -->
+  <div class="vol-slider-box" title="Volume Slider">
+    <input tabindex="-1" onfocus="this.blur()" type="range" min="0" max="100" value="100" class="volume-slider-v" id="volSlider" oninput="setVolume(this.value)"/>
   </div>
 </div>
 
@@ -937,14 +918,19 @@ function buildPlayerHtml(serial, screenW, screenH) {
 <div class="modal" id="debugModal">
   <div class="mbox">
     <div style="font-weight:700;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
-      <span>🐞 Stream Diagnostics</span>
-      <button onclick="document.getElementById('debugModal').style.display='none'" style="background:none;border:none;color:#94a3b8;font-size:18px;cursor:pointer">&times;</button>
+      <span>🐞 Stream Options &amp; Diagnostics</span>
+      <button onclick="document.getElementById('debugModal').style.display='none'" style="background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer">&times;</button>
     </div>
-    <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;color:#94a3b8">
+    <div style="display:flex;flex-direction:column;gap:10px;font-size:13px;color:#94a3b8">
       <div>Device Serial: <strong style="color:#fff">${serial}</strong></div>
       <div>Stream Resolution: <strong style="color:#38bdf8" id="dbgRes">--</strong></div>
-      <div>Decoder Engine: <strong style="color:#34d399" id="dbgCodec">--</strong></div>
+      <div>Stream Status: <strong style="color:#34d399" id="modeText">CONNECTING</strong> (<span id="fps">--fps</span>)</div>
+      <div>Decoder Engine: <strong style="color:#34d399" id="dbgCodec">WebCodecs Hardware</strong></div>
       <div>WebSocket State: <strong style="color:#c084fc" id="dbgWs">--</strong></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="mbtn" onclick="reconnectStream()" style="flex:1">🔄 Reconnect</button>
+        <button class="mbtn" onclick="popOutWindow()" style="flex:1;background:rgba(255,255,255,0.12);color:#fff">🗗 Pop Out</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1297,12 +1283,36 @@ function buildPlayerHtml(serial, screenW, screenH) {
     };
 
     ws.onmessage = function(e) {
-      // JSON control messages (stream_reset, etc.)
+      // JSON control messages (stream_reset, resolution_change, etc.)
       if (typeof e.data === 'string' || e.data instanceof ArrayBuffer && e.data.byteLength > 0 && new Uint8Array(e.data)[0] === 0x7B) {
         try {
           const txt = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
           const msg = JSON.parse(txt);
-          if (msg.type === 'stream_reset') {
+          if (msg.type === 'resolution_change') {
+            console.log('[Stream] Dynamic orientation/resolution update: ' + msg.width + 'x' + msg.height);
+            nativeW = msg.width;
+            nativeH = msg.height;
+            canvas.width = msg.width;
+            canvas.height = msg.height;
+            hasKeyframe = false;
+            // Cleanly reconfigure or reset decoder for the new dimensions
+            if (decoder && decoder.state !== 'closed') {
+              try {
+                decoder.configure({
+                  codec: 'avc1.42E01E',
+                  optimizeForLatency: true,
+                  hardwareAcceleration: 'prefer-hardware'
+                });
+              } catch (_) {
+                resetDecoder();
+                initDecoder();
+              }
+            }
+            const dbgRes = document.getElementById('dbgRes');
+            if (dbgRes) dbgRes.textContent = msg.width + ' x ' + msg.height;
+            send({ type: 'wake' });
+            return;
+          } else if (msg.type === 'stream_reset') {
             console.log('[Stream] Server stream reset — reinitialising decoder');
             resetDecoder();
             fbRunning = false;
@@ -1665,11 +1675,12 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
   function rotateScreen() {
     send({ type: 'code', code: 275 });
-    setTimeout(reconnectStream, 300);
+    setTimeout(() => send({ type: 'wake' }), 250);
   }
 
   function reconnectStream() {
-    modeText.textContent = 'RECONNECTING';
+    const mt = document.getElementById('modeText');
+    if (mt) mt.textContent = 'RECONNECTING';
     resetDecoder();
     connectWS();
   }
@@ -1677,15 +1688,20 @@ function buildPlayerHtml(serial, screenW, screenH) {
   function toggleDebugModal() {
     const modal = document.getElementById('debugModal');
     if (modal) {
-      document.getElementById('dbgRes').textContent = nativeW + ' x ' + nativeH;
-      document.getElementById('dbgWs').textContent = wsOk ? 'CONNECTED' : 'DISCONNECTED';
-      document.getElementById('dbgCodec').textContent = typeof VideoDecoder !== 'undefined' ? 'WebCodecs H264 (Hardware)' : 'Fallback Canvas';
+      const res = document.getElementById('dbgRes');
+      if (res) res.textContent = (canvas.width || nativeW) + ' x ' + (canvas.height || nativeH);
+      const wsSt = document.getElementById('dbgWs');
+      if (wsSt) wsSt.textContent = wsOk ? 'CONNECTED' : 'DISCONNECTED';
+      const codec = document.getElementById('dbgCodec');
+      if (codec) codec.textContent = typeof VideoDecoder !== 'undefined' ? 'WebCodecs H264 (Hardware)' : 'Fallback Canvas';
       modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
     }
   }
 
   function popOutWindow() {
-    const width = 510, height = 900;
+    const isWide = (canvas.width > canvas.height) || (nativeW > nativeH);
+    const width = isWide ? 1080 : 540;
+    const height = isWide ? 760 : 980;
     const left = Math.max(0, Math.round((window.screen.width - width) / 2));
     const top = Math.max(0, Math.round((window.screen.height - height) / 2));
     window.open(window.location.href, 'Stream_${serial}', 'width=' + width + ',height=' + height + ',top=' + top + ',left=' + left + ',resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes');
