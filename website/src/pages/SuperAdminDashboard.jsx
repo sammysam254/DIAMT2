@@ -129,7 +129,7 @@ export default function SuperAdminDashboard() {
   const handleBlockUser = async (e) => {
     e.preventDefault();
     if (!blockReasonModal) return;
-    if (['admin', 'super_admin', 'seed_admin'].includes(blockReasonModal.role) || blockReasonModal.email?.toLowerCase() === 'sammyseth260@gmail.com') {
+    if (['admin', 'super_admin', 'seed_admin'].includes(blockReasonModal.role) || (import.meta.env.VITE_SEED_ADMIN_EMAIL && blockReasonModal.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase())) {
       alert('Administrators and Seed Admins cannot be blocked.');
       setBlockReasonModal(null);
       return;
@@ -294,7 +294,7 @@ export default function SuperAdminDashboard() {
                     </td>
                     <td style={{ padding: '14px 12px', textAlign: 'right' }}>
                       <div style={{ display: 'inline-flex', gap: '8px', alignItems: 'center' }}>
-                        {(profile?.role === 'seed_admin' || profile?.email?.toLowerCase() === 'sammyseth260@gmail.com') && (
+                        {(profile?.role === 'seed_admin' || (import.meta.env.VITE_SEED_ADMIN_EMAIL && profile?.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase())) && (
                           <button
                             onClick={() => handleDeleteFromView(d.id)}
                             className="btn btn-danger"

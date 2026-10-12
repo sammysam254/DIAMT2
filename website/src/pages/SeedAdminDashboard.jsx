@@ -243,7 +243,7 @@ export default function SeedAdminDashboard() {
     }
   };
 
-  const isSeedOwner = (p) => p.email?.toLowerCase() === 'sammyseth260@gmail.com';
+  const isSeedOwner = (p) => (import.meta.env.VITE_SEED_ADMIN_EMAIL && p.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase()) || p.role === 'seed_admin';
 
   return (
     <DashboardLayout>
@@ -254,7 +254,7 @@ export default function SeedAdminDashboard() {
             <h1 style={{ fontSize: '24px', fontWeight: 800 }}>Seed Admin Control Center</h1>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: '14px', marginTop: '4px' }}>
-            Owner rights (sammyseth260@gmail.com). Manage Super Admin licenses, binding codes, and system modes.
+            Owner rights. Manage Super Admin licenses, binding codes, and system modes.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>

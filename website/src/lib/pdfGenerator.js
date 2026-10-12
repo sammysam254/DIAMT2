@@ -430,7 +430,7 @@ export function generateTerminationLetterPdf({ worker, weekIdentifier, reason = 
   const directives = [
     'Immediate Revocation: All hardware access privileges, live device streaming sessions, and credentials have been permanently locked.',
     'Station Departure Deadline: As your services are no longer needed, you are strictly required to hand over any facility equipment and leave the station before tomorrow at 8:00 AM sharp.',
-    'Clearance Authority: This termination was executed by automated system enforcement. In accordance with organizational policy, only the Seed Administrator (sammyseth260@gmail.com) holds exclusive authorization to review or reinstate a suspended account.',
+    'Clearance Authority: This termination was executed by automated system enforcement. In accordance with organizational policy, only the Seed Administrator holds exclusive authorization to review or reinstate a suspended account.',
     'Final Claims Audit: All legitimate and approved claims submitted prior to termination have been documented in your attached weekly audit statement.'
   ];
 
@@ -688,7 +688,7 @@ export function generateSeedAdminComplianceAuditPdf({ weekIdentifier, workers = 
   const workerList = workers.filter(w => 
     w.role === 'worker' && 
     !['admin', 'super_admin', 'seed_admin'].includes(w.role) && 
-    w.email?.toLowerCase() !== 'sammyseth260@gmail.com'
+    (!import.meta.env.VITE_SEED_ADMIN_EMAIL || w.email?.toLowerCase() !== import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase())
   );
 
   const records = workerList.map(w => {

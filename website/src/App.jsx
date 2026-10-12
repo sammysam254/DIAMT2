@@ -28,8 +28,7 @@ function ProtectedRoute({ children, allowedRoles }) {
 
   if (!user) return <Navigate to="/login" replace />;
 
-  // Admins, Super Admins, and Seed Admins should NEVER be banned or auto-suspended
-  const isAdminRole = ['admin', 'super_admin', 'seed_admin'].includes(profile?.role) || profile?.email?.toLowerCase() === 'sammyseth260@gmail.com';
+  const isAdminRole = ['admin', 'super_admin', 'seed_admin'].includes(profile?.role) || (import.meta.env.VITE_SEED_ADMIN_EMAIL && profile?.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
 
   if (!isAdminRole && (profile?.is_blocked === true || profile?.is_auto_suspended === true)) {
     return <BlockedScreen />;

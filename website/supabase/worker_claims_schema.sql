@@ -85,7 +85,6 @@ BEGIN
     FROM public.profiles p
     WHERE p.role = 'worker'
       AND p.role NOT IN ('admin', 'super_admin', 'seed_admin')
-      AND p.email NOT IN ('sammyseth260@gmail.com')
       AND COALESCE(p.is_auto_suspended, FALSE) = FALSE
       AND COALESCE(p.is_blocked, FALSE) = FALSE
       AND COALESCE((
@@ -116,7 +115,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE FUNCTION public.protect_admins_from_suspension()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.role IN ('admin', 'super_admin', 'seed_admin') OR NEW.email = 'sammyseth260@gmail.com' THEN
+  IF NEW.role IN ('admin', 'super_admin', 'seed_admin') THEN
     NEW.is_blocked := FALSE;
     NEW.is_auto_suspended := FALSE;
     NEW.blocked_reason := NULL;

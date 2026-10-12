@@ -18,7 +18,7 @@ export default function RentalsLayout({ children }) {
     setMobileMenuOpen(false);
   };
 
-  const isSeedAdmin = profile?.role === 'seed_admin' || profile?.email?.toLowerCase() === 'sammyseth260@gmail.com';
+  const isSeedAdmin = profile?.role === 'seed_admin' || (import.meta.env.VITE_SEED_ADMIN_EMAIL && profile?.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
   const isSuperAdmin = profile?.role === 'super_admin' || isSeedAdmin;
 
   return (

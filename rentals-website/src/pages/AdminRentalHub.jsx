@@ -12,7 +12,7 @@ export default function AdminRentalHub() {
   const [priceEditingId, setPriceEditingId] = useState(null);
   const [priceInput, setPriceInput] = useState('');
 
-  const isSeedAdmin = profile?.role === 'seed_admin' || profile?.email?.toLowerCase() === 'sammyseth260@gmail.com';
+  const isSeedAdmin = profile?.role === 'seed_admin' || (import.meta.env.VITE_SEED_ADMIN_EMAIL && profile?.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
 
   const loadRentalData = async () => {
     setLoading(true);

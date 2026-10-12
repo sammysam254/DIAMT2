@@ -40,13 +40,21 @@ function loadConfig() {
 }
 
 // ─── Upstash Redis connection ─────────────────────────────────────────────────
-const REDIS_URL = 'redis://default:gQAAAAAABF5yAAIgcDEzNmQ5OTcwZWY3Yjk0YmE2ODIxNmE3OGRhZTFiMjMwZA@composed-vulture-286322.upstash.io:6379';
+const REDIS_URL = process.env.REDIS_URL || 'redis://default:gQAAAAAAA2kSAAIgcDEwNDc0MmExMTVjNDg0YWZlOGQwZWJlNzQ5OWNiMDE2Mg@super-gannet-223506.upstash.io:6379';
 
 let redis      = null;
 let redisReady = false;
 let redisError = null;
 
 function initRedis() {
+  const cfg = loadConfig();
+  const url = process.env.REDIS_URL || cfg.redisUrl || REDIS_URL;
+
+  if (!url) {
+    logger.info('[CacheService] No Redis URL configured — using in-memory cache mode');
+    return;
+  }
+
   let Redis;
   try {
     Redis = require('ioredis');
@@ -54,9 +62,6 @@ function initRedis() {
     logger.warn('[CacheService] ioredis not installed — using in-memory fallback only');
     return;
   }
-
-  const cfg = loadConfig();
-  const url = cfg.redisUrl || REDIS_URL;
 
   try {
     redis = new Redis(url, {

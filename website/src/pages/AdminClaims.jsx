@@ -60,7 +60,7 @@ export default function AdminClaims() {
   const [notifType, setNotifType] = useState('info');
   const [sendingNotif, setSendingNotif] = useState(false);
 
-  const isSeedAdmin = profile?.role === 'seed_admin' || profile?.email?.toLowerCase() === 'sammyseth260@gmail.com';
+  const isSeedAdmin = profile?.role === 'seed_admin' || (import.meta.env.VITE_SEED_ADMIN_EMAIL && profile?.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
 
   useEffect(() => {
     setWeekList(getRecentWeekIdentifiers(12));

@@ -3,7 +3,7 @@
 const axios = require('axios');
 const walletStore = require('./wallet-store');
 
-const SEED_ADMIN_EMAIL = 'sammyseth260@gmail.com';
+const SEED_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || process.env.SEED_ADMIN_EMAIL || '').toLowerCase().trim();
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
@@ -17,7 +17,7 @@ exports.handler = async (event) => {
     const callerEmail = (adminEmail || '').toLowerCase().trim();
     const callerRole = await walletStore.getRole(callerEmail);
 
-    const isSeedAdmin = callerEmail === SEED_ADMIN_EMAIL || callerRole === 'seed_admin';
+    const isSeedAdmin = (SEED_ADMIN_EMAIL && callerEmail === SEED_ADMIN_EMAIL) || callerRole === 'seed_admin';
     const isSuperAdmin = isSeedAdmin || callerRole === 'super_admin';
     const isAdmin = isSuperAdmin || callerRole === 'admin';
 
@@ -29,8 +29,8 @@ exports.handler = async (event) => {
       };
     }
 
-    const supabaseUrl = process.env.SUPABASE_URL || 'https://xbolsgcntkfzzpqnulsa.supabase.co';
-    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+    const supabaseUrl = process.env.SUPABASE_URL || 'https://ipnjbzbsnmkfrjaaidoj.supabase.co';
+    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwbmpiemJzbm1rZnJqYWFpZG9qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MTc2NjkyNiwiZXhwIjoyMTA3MzQyOTI2fQ.gk2YiqqhJqDiCRG6PhIL5SrVwbGj61cXQKIxdLOg6_A';
 
     const client = axios.create({
       baseURL: `${supabaseUrl.replace(/\/$/, '')}/rest/v1`,

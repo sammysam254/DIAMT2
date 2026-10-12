@@ -2,15 +2,14 @@
 
 const axios = require('axios');
 
-const memoryRoles = new Map([
-  ['sammyseth260@gmail.com', 'seed_admin']
-]);
+const adminEmail = (process.env.ADMIN_EMAIL || process.env.SEED_ADMIN_EMAIL || '').toLowerCase().trim();
+const memoryRoles = new Map(adminEmail ? [[adminEmail, 'seed_admin']] : []);
 
 let memoryCctvAllowed = true;
 
 function getSupabaseClient() {
-  const supabaseUrl = process.env.SUPABASE_URL || 'https://xbolsgcntkfzzpqnulsa.supabase.co';
-  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+  const supabaseUrl = process.env.SUPABASE_URL || 'https://ipnjbzbsnmkfrjaaidoj.supabase.co';
+  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwbmpiemJzbm1rZnJqYWFpZG9qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MTc2NjkyNiwiZXhwIjoyMTA3MzQyOTI2fQ.gk2YiqqhJqDiCRG6PhIL5SrVwbGj61cXQKIxdLOg6_A';
 
   return axios.create({
     baseURL: `${supabaseUrl.replace(/\/$/, '')}/rest/v1`,
@@ -28,7 +27,7 @@ async function getRole(userId) {
   if (!userId) return 'operator';
   const normalizedUser = userId.toLowerCase().trim();
 
-  if (normalizedUser === 'sammyseth260@gmail.com') {
+  if (adminEmail && normalizedUser === adminEmail) {
     return 'seed_admin';
   }
 
@@ -66,7 +65,7 @@ async function setRole(userId, role) {
   if (!userId) return false;
   const normalizedUser = userId.toLowerCase().trim();
 
-  if (normalizedUser === 'sammyseth260@gmail.com') {
+  if (adminEmail && normalizedUser === adminEmail) {
     memoryRoles.set(normalizedUser, 'seed_admin');
     return 'seed_admin';
   }
@@ -99,14 +98,16 @@ async function getAllRoles() {
   const rolesList = [];
   const seen = new Set();
 
-  // Always include Seed Admin first
-  rolesList.push({
-    email: 'sammyseth260@gmail.com',
-    role: 'seed_admin',
-    label: 'Seed Admin (Root Owner)',
-    status: 'active'
-  });
-  seen.add('sammyseth260@gmail.com');
+  // Always include configured Seed Admin first if present
+  if (adminEmail) {
+    rolesList.push({
+      email: adminEmail,
+      role: 'seed_admin',
+      label: 'Seed Admin (Root Owner)',
+      status: 'active'
+    });
+    seen.add(adminEmail);
+  }
 
   const client = getSupabaseClient();
 
@@ -119,8 +120,8 @@ async function getAllRoles() {
           seen.add(e);
           rolesList.push({
             email: e,
-            role: e === 'sammyseth260@gmail.com' ? 'seed_admin' : (p.role || 'operator'),
-            label: e === 'sammyseth260@gmail.com' ? 'Seed Admin' : (p.role === 'super_admin' ? 'Super Admin' : (p.role === 'admin' ? 'Admin' : 'Operator')),
+            role: (adminEmail && e === adminEmail) ? 'seed_admin' : (p.role || 'operator'),
+            label: (adminEmail && e === adminEmail) ? 'Seed Admin' : (p.role === 'super_admin' ? 'Super Admin' : (p.role === 'admin' ? 'Admin' : 'Operator')),
             status: p.is_blocked ? 'blocked' : 'active'
           });
         }

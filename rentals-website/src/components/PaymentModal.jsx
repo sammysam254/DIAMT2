@@ -1,17 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { CreditCard, QrCode, Copy, Check, ShieldCheck, AlertCircle, RefreshCw, X, ArrowRight, Lock, DollarSign, Wallet } from 'lucide-react';
 
-const PAYSTACK_PUBLIC_KEY = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY || 'pk_live_558e1ed8114c63c09b135b1523443ecfffb60524';
-const NOWPAYMENTS_API_KEY = import.meta.env.VITE_NOWPAYMENTS_API_KEY || 'QNJ3N44-2JP4AKM-PGPJXCK-3AQPC3T';
+const PAYSTACK_PUBLIC_KEY = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY || '';
+const NOWPAYMENTS_API_KEY = import.meta.env.VITE_NOWPAYMENTS_API_KEY || '';
 
 // Supported Crypto Deposit Networks for NOWPayments API
 const CRYPTO_NETWORKS = [
-  { id: 'trc20', name: 'TRC20', symbol: 'USDT (TRC20)', pay_currency: 'usdttrc20', fallbackAddress: 'TQx6N9vD8jYhL2P3mZ5kR4wE7uS1a9oQ8p', color: '#f87171' },
-  { id: 'bep20', name: 'BEP20', symbol: 'USDT (BEP20)', pay_currency: 'usdtbsc', fallbackAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F', color: '#fbbf24' },
-  { id: 'erc20', name: 'ERC20', symbol: 'USDT (ERC20)', pay_currency: 'usdterc20', fallbackAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F', color: '#38bdf8' },
-  { id: 'polygon', name: 'POLYGON', symbol: 'USDT (Polygon)', pay_currency: 'usdtmatic', fallbackAddress: '0x71C7656EC7ab88b098defB751B7401B5f6d8976F', color: '#a855f7' },
-  { id: 'solana', name: 'SOLANA', symbol: 'USDT (Solana)', pay_currency: 'usdtsol', fallbackAddress: '7xKXtg2CW87d97TXJSDp154f3a47Xb3b4f5k6', color: '#34d399' },
-  { id: 'btc', name: 'BTC', symbol: 'BTC (Bitcoin)', pay_currency: 'btc', fallbackAddress: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', color: '#f97316' },
+  { id: 'trc20', name: 'TRC20', symbol: 'USDT (TRC20)', pay_currency: 'usdttrc20', fallbackAddress: import.meta.env.VITE_USDT_TRC20_WALLET || '', color: '#f87171' },
+  { id: 'bep20', name: 'BEP20', symbol: 'USDT (BEP20)', pay_currency: 'usdtbsc', fallbackAddress: import.meta.env.VITE_USDT_BEP20_WALLET || '', color: '#fbbf24' },
+  { id: 'erc20', name: 'ERC20', symbol: 'USDT (ERC20)', pay_currency: 'usdterc20', fallbackAddress: import.meta.env.VITE_USDT_ERC20_WALLET || '', color: '#38bdf8' },
+  { id: 'polygon', name: 'POLYGON', symbol: 'USDT (Polygon)', pay_currency: 'usdtmatic', fallbackAddress: import.meta.env.VITE_USDT_POLYGON_WALLET || '', color: '#a855f7' },
+  { id: 'solana', name: 'SOLANA', symbol: 'USDT (Solana)', pay_currency: 'usdtsol', fallbackAddress: import.meta.env.VITE_SOLANA_WALLET || '', color: '#34d399' },
+  { id: 'btc', name: 'BTC', symbol: 'BTC (Bitcoin)', pay_currency: 'btc', fallbackAddress: import.meta.env.VITE_BTC_WALLET || '', color: '#f97316' },
 ];
 
 export default function PaymentModal({ device, user, onClose, onPaymentSuccess }) {

@@ -46,7 +46,7 @@ export default function NotificationBar() {
 
     // Check & trigger daily target reminders for workers only (admins are fully exempt)
     const isAdmin = ['admin', 'super_admin', 'seed_admin'].includes(profile?.role) ||
-                    (profile?.email || '').toLowerCase() === 'sammyseth260@gmail.com';
+                    (import.meta.env.VITE_SEED_ADMIN_EMAIL && (profile?.email || '').toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
     let interval = null;
     if (!isAdmin && profile?.role === 'worker') {
       checkAndTriggerDailyTargetReminders(profile);

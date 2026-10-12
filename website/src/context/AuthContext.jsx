@@ -70,14 +70,15 @@ export function AuthProvider({ children }) {
         .eq('id', currentUser.id)
         .single();
 
-      const isSeed = currentUser.email?.toLowerCase() === 'sammyseth260@gmail.com';
+      const seedEnvEmail = (import.meta.env.VITE_SEED_ADMIN_EMAIL || '').toLowerCase().trim();
+      const isSeed = (seedEnvEmail && currentUser.email?.toLowerCase() === seedEnvEmail) || data?.role === 'seed_admin';
 
       if (error && error.code === 'PGRST116') {
         // Fallback profile creation
         const { data: newProf } = await supabase.from('profiles').insert([{
           id: currentUser.id,
           email: currentUser.email,
-          role: isSeed ? 'seed_admin' : 'worker',
+          role: (seedEnvEmail && currentUser.email?.toLowerCase() === seedEnvEmail) ? 'seed_admin' : 'worker',
           is_blocked: false,
         }]).select().single();
         data = newProf;
@@ -92,8 +93,8 @@ export function AuthProvider({ children }) {
         } catch (_) {}
       }
 
-      // Automatically assume and enforce Seed Admin role for sammyseth260@gmail.com
-      if (isSeed) {
+      // Automatically assume and enforce Seed Admin role if matched with configured seed email
+      if (seedEnvEmail && currentUser.email?.toLowerCase() === seedEnvEmail) {
         if (!data || data.role !== 'seed_admin' || data.is_blocked) {
           data = { ...(data || {}), id: currentUser.id, email: currentUser.email, role: 'seed_admin', is_blocked: false, is_auto_suspended: false };
           try {

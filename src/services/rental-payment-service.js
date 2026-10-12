@@ -216,7 +216,7 @@ async function createOrUpdateDeviceRental(serialNumber, options = {}) {
         '/user_profiles',
         {
           id: rentalUserId,
-          email: config.adminEmail || 'sammyseth260@gmail.com',
+          email: config.adminEmail || process.env.ADMIN_EMAIL || 'admin@localhost',
           updated_at: new Date().toISOString(),
         },
         { headers: { Prefer: 'resolution=merge-duplicates' } }

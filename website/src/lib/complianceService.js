@@ -41,7 +41,7 @@ export function calculateWorkerCompliance(worker, workerWeekClaims = []) {
 export function isExemptFromSuspension(worker) {
   if (!worker) return true;
   if (['admin', 'super_admin', 'seed_admin'].includes(worker.role)) return true;
-  if ((worker.email || '').toLowerCase() === 'sammyseth260@gmail.com') return true;
+  if (import.meta.env.VITE_SEED_ADMIN_EMAIL && (worker.email || '').toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase()) return true;
   return false;
 }
 
@@ -201,7 +201,7 @@ export async function autoCheckAndEnforcePastWeekAudit(currentProfile) {
   // Case 2: Admin / Seed Admin login enforcement
   // Automatically audit the concluded week in the background if not done recently
   const isAdmin = ['admin', 'super_admin', 'seed_admin'].includes(currentProfile.role) ||
-                  currentProfile.email?.toLowerCase() === 'sammyseth260@gmail.com';
+                  (import.meta.env.VITE_SEED_ADMIN_EMAIL && currentProfile.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
 
   if (isAdmin) {
     const lockKey = `diamt_audit_last_enforced_${previousWeek}`;

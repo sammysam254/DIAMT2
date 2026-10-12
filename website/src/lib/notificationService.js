@@ -137,7 +137,7 @@ export async function checkAndTriggerDailyTargetReminders(workerProfile) {
   
   // Administrators are exempt from worker weekly compliance targets and reminders
   const isAdmin = ['admin', 'super_admin', 'seed_admin'].includes(workerProfile.role) ||
-                  (workerProfile.email || '').toLowerCase() === 'sammyseth260@gmail.com';
+                  (import.meta.env.VITE_SEED_ADMIN_EMAIL && (workerProfile.email || '').toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
   if (isAdmin || workerProfile.role !== 'worker') return;
 
   // Don't spam suspended workers
