@@ -332,7 +332,7 @@ class ScrcpyEngine extends EventEmitter {
       'cleanup=false',
       'send_dummy_byte=true',
       'video_source=display',
-      'video_bit_rate=1400000',
+      'video_bit_rate=1200000',
       'max_size=560',
       'max_fps=60',
       'video_codec_options=i-frame-interval=1',
@@ -767,9 +767,14 @@ class ScrcpyEngine extends EventEmitter {
   _broadcastVideo(payload, isKeyframe = false) {
     for (const ws of this.wsClients) {
       if (ws.readyState === 1) {
-        // Backpressure protection: drop delta frames if client send buffer is backed up (> 32KB)
-        if (ws.bufferedAmount > 32 * 1024 && !isKeyframe) {
+        // Backpressure protection: only throttle if socket buffer exceeds 256KB
+        if (ws.bufferedAmount > 256 * 1024) {
+          ws._needsKeyframe = true;
           continue;
+        }
+        if (ws._needsKeyframe) {
+          if (!isKeyframe) continue; // wait for next clean keyframe before resuming
+          ws._needsKeyframe = false;
         }
         try { ws.send(payload, { binary: true }); } catch (_) { this.wsClients.delete(ws); }
       } else {
@@ -892,9 +897,7 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(0, 24);              // action_button = 0
     buf.writeInt32BE(action === 1 ? 0 : 1, 28); // buttons: 1 on DOWN/MOVE, 0 on UP
     try {
-      this.controlSocket.cork();
       this.controlSocket.write(buf);
-      this.controlSocket.uncork();
       return true;
     } catch (e) { 
       logger.warn(`[ScrcpyEngine ${this.serial}] touch write failed: ${e.message}`);

@@ -140,7 +140,8 @@ function handleControl(type, data, serial, engine) {
     const action = parseInt(get(data, 'action'), 10);
     const x = parseFloat(get(data, 'x'));
     const y = parseFloat(get(data, 'y'));
-    const ok = engine.sendTouchEvent(action, x, y, W, H);
+    const pressure = (typeof data.pressure === 'number') ? data.pressure : (action === 1 ? 0 : 0.6);
+    const ok = engine.sendTouchEvent(action, x, y, W, H, pressure);
     if (!ok && action === 0) {
       const sx = Math.round((x / W) * realW);
       const sy = Math.round((y / H) * realH);
@@ -830,19 +831,19 @@ function buildPlayerHtml(serial, screenW, screenH) {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Stream ${serial}</title>
   <style>
     *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
-    html,body{height:100%;width:100%;background:#000;color:#f8fafc;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;overflow:hidden}
-    body{display:flex;flex-direction:row;align-items:stretch;justify-content:center;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+    html,body{height:100%;width:100%;background:#000;color:#f8fafc;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;overflow:hidden;touch-action:none;overscroll-behavior:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+    body{display:flex;flex-direction:row;align-items:stretch;justify-content:center;-webkit-tap-highlight-color:transparent}
 
     /* Main Phone/Tablet Viewing Stage */
-    .stage{flex:1;height:100vh;width:calc(100vw - 52px);min-width:0;display:flex;align-items:center;justify-content:center;background:#000;position:relative;overflow:hidden}
-    .wrap{position:relative;display:flex;align-items:center;justify-content:center;height:100vh;width:100%;background:#000;overflow:hidden;touch-action:none}
+    .stage{flex:1;height:100vh;width:calc(100vw - 52px);min-width:0;display:flex;align-items:center;justify-content:center;background:#000;position:relative;overflow:hidden;touch-action:none;overscroll-behavior:none}
+    .wrap{position:relative;display:flex;align-items:center;justify-content:center;height:100vh;width:100%;background:#000;overflow:hidden;touch-action:none;overscroll-behavior:none}
     
     /* Enlarged Canvas: fills 100vh cleanly with natural aspect ratio, expands wide for tablets/landscape */
-    canvas{display:block;height:100vh;max-height:100vh;width:auto;max-width:calc(100vw - 52px);object-fit:contain;cursor:default;touch-action:none;-webkit-tap-highlight-color:transparent}
+    canvas{display:block;height:100vh;max-height:100vh;width:auto;max-width:calc(100vw - 52px);object-fit:contain;cursor:default;touch-action:none;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
 
     /* Sleek Right Sidebar flush against edge */
     .sidebar{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:6px;width:50px;background:rgba(18,22,34,.98);border-left:1px solid rgba(255,255,255,.08);padding:8px 4px;height:100vh;overflow-y:auto;overflow-x:hidden;flex-shrink:0;z-index:20;box-shadow:-5px 0 25px rgba(0,0,0,.6)}
@@ -857,6 +858,13 @@ function buildPlayerHtml(serial, screenW, screenH) {
     
     .vol-slider-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 0 4px;width:100%;flex-shrink:0}
     .volume-slider-v{-webkit-appearance:slider-vertical;appearance:slider-vertical;writing-mode:bt-lr;width:6px;height:75px;background:rgba(255,255,255,.15);border-radius:4px;outline:none;cursor:pointer;accent-color:#22c55e}
+
+    @media (max-width: 600px) {
+      .sidebar{width:44px;padding:6px 2px}
+      .btn{width:36px;height:36px;font-size:14px;border-radius:8px}
+      .stage{width:calc(100vw - 44px)}
+      canvas{max-width:calc(100vw - 44px)}
+    }
 
     /* Modals */
     .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);z-index:100;align-items:center;justify-content:center}
@@ -1433,8 +1441,17 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
   function coords(e) {
     const r = canvas.getBoundingClientRect();
-    const cx = e.touches ? e.touches[0].clientX : e.clientX;
-    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    let cx = 0, cy = 0;
+    if (e.touches && e.touches.length > 0) {
+      cx = e.touches[0].clientX;
+      cy = e.touches[0].clientY;
+    } else if (e.changedTouches && e.changedTouches.length > 0) {
+      cx = e.changedTouches[0].clientX;
+      cy = e.changedTouches[0].clientY;
+    } else if (typeof e.clientX === 'number') {
+      cx = e.clientX;
+      cy = e.clientY;
+    }
     
     // Use canvas size first (actual rendered), fall back to nativeW/H, then server defaults
     const canvasW = canvas.width || nativeW || ${screenW};
@@ -1457,88 +1474,87 @@ function buildPlayerHtml(serial, screenW, screenH) {
     };
   }
 
-  // ── Natural Human Pointer & Fling Mechanics ──────────────────────────
-  let down = false;
+  // ── Instant Native Touch & Pointer Mechanics ─────────────────────────
+  let isNativeTouchActive = false;
+  let lastMoveTime = 0;
+  let lastX = -1, lastY = -1;
+
+  // Native Touch Listeners (Mobile / Tablet browsers with raw 0ms latency)
+  function handleTouchStart(e) {
+    isNativeTouchActive = true;
+    e.preventDefault();
+    initAudio();
+    const c = coords(e);
+    lastX = c.x; lastY = c.y;
+    lastMoveTime = performance.now();
+    send({ type: 'touch', action: 0, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.5 });
+  }
+
+  function handleTouchMove(e) {
+    if (!isNativeTouchActive) return;
+    e.preventDefault();
+    const now = performance.now();
+    // 7ms micro-throttle allows up to ~140Hz touch sampling without socket congestion
+    if (now - lastMoveTime < 7) return;
+    const c = coords(e);
+    if (Math.abs(c.x - lastX) < 1 && Math.abs(c.y - lastY) < 1) return;
+    lastX = c.x; lastY = c.y;
+    lastMoveTime = now;
+    send({ type: 'touch', action: 2, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.6 });
+  }
+
+  function handleTouchEnd(e) {
+    if (!isNativeTouchActive) return;
+    isNativeTouchActive = false;
+    e.preventDefault();
+    const c = coords(e);
+    send({ type: 'touch', action: 1, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0 });
+  }
+
+  canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+  canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+  canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+  canvas.addEventListener('touchcancel', handleTouchEnd, { passive: false });
+
+  // Mouse / Pointer Listeners (Desktop browsers with mouse / stylus)
+  let isPointerDown = false;
   let activePointerId = null;
-  let moveRaf = null;
-  let pendingMove = null;
-  let pointerHistory = [];
 
   canvas.addEventListener('pointerdown', (e) => {
+    // If device is touch-driven, let touchstart handle it with 0ms latency
+    if (e.pointerType === 'touch' || isNativeTouchActive) return;
     e.preventDefault();
-    down = true;
+    isPointerDown = true;
     activePointerId = e.pointerId;
     try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
     initAudio();
     const c = coords(e);
-    pointerHistory = [{ x: c.x, y: c.y, t: performance.now() }];
-    send({ type:'touch', action:0, x:c.x, y:c.y, width:nativeW, height:nativeH, pressure:0.45 });
+    lastX = c.x; lastY = c.y;
+    lastMoveTime = performance.now();
+    send({ type: 'touch', action: 0, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.5 });
   });
 
   canvas.addEventListener('pointermove', (e) => {
-    if (!down) return;
+    if (e.pointerType === 'touch' || isNativeTouchActive || !isPointerDown) return;
     e.preventDefault();
-    const c = coords(e);
     const now = performance.now();
-    pointerHistory.push({ x: c.x, y: c.y, t: now });
-    while (pointerHistory.length > 1 && now - pointerHistory[0].t > 120) {
-      pointerHistory.shift();
-    }
-    pendingMove = c;
-
-    if (!moveRaf) {
-      moveRaf = requestAnimationFrame(() => {
-        moveRaf = null;
-        if (down && pendingMove) {
-          send({ type:'touch', action:2, x:pendingMove.x, y:pendingMove.y, width:nativeW, height:nativeH, pressure:0.65 });
-        }
-      });
-    }
+    if (now - lastMoveTime < 7) return;
+    const c = coords(e);
+    if (Math.abs(c.x - lastX) < 1 && Math.abs(c.y - lastY) < 1) return;
+    lastX = c.x; lastY = c.y;
+    lastMoveTime = now;
+    send({ type: 'touch', action: 2, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.6 });
   });
 
   function releasePointer(e) {
-    if (!down) return;
-    down = false;
-    if (moveRaf) {
-      cancelAnimationFrame(moveRaf);
-      moveRaf = null;
-    }
+    if (e.pointerType === 'touch' || isNativeTouchActive || !isPointerDown) return;
+    isPointerDown = false;
     if (activePointerId !== null) {
       try { canvas.releasePointerCapture(activePointerId); } catch (_) {}
       activePointerId = null;
     }
-
     const c = coords(e);
-    const now = performance.now();
-    pointerHistory.push({ x: c.x, y: c.y, t: now });
-
-    // Only send MOVE on release if pointer actually moved, ensuring pure clicks register as taps
-    const didMove = pointerHistory.length > 2 || (pointerHistory.length >= 2 && Math.hypot(c.x - pointerHistory[0].x, c.y - pointerHistory[0].y) > 4);
-    if (didMove) {
-      send({ type:'touch', action:2, x:c.x, y:c.y, width:nativeW, height:nativeH, pressure:0.5 });
-    }
-
-    // Calculate fling velocity for natural coasting physics
-    if (pointerHistory.length >= 2) {
-      const oldest = pointerHistory[0];
-      const dt = now - oldest.t;
-      const dx = c.x - oldest.x;
-      const dy = c.y - oldest.y;
-      const speed = Math.hypot(dx, dy) / Math.max(1, dt); // px/ms
-
-      // If swift swipe/flick (> 0.35 px/ms), project an extra momentum step
-      // so Android's native VelocityTracker produces a silky smooth momentum scroll
-      if (speed > 0.35 && dt < 150) {
-        const momentumDist = Math.min(220, speed * 35);
-        const angle = Math.atan2(dy, dx);
-        const flingX = Math.round(c.x + Math.cos(angle) * momentumDist);
-        const flingY = Math.round(c.y + Math.sin(angle) * momentumDist);
-        send({ type:'touch', action:2, x:flingX, y:flingY, width:nativeW, height:nativeH, pressure:0.3 });
-      }
-    }
-
-    // Complete gesture with ACTION_UP
-    send({ type:'touch', action:1, x:c.x, y:c.y, width:nativeW, height:nativeH, pressure:0 });
+    send({ type: 'touch', action: 1, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0 });
   }
 
   canvas.addEventListener('pointerup', releasePointer);
