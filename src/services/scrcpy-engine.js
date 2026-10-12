@@ -332,8 +332,8 @@ class ScrcpyEngine extends EventEmitter {
       'cleanup=false',
       'send_dummy_byte=true',
       'video_source=display',
-      'video_bit_rate=4000000',
-      'max_size=1920',
+      'video_bit_rate=1400000',
+      'max_size=560',
       'max_fps=60',
       'video_codec_options=i-frame-interval=1',
       'send_frame_meta=true',
@@ -767,8 +767,8 @@ class ScrcpyEngine extends EventEmitter {
   _broadcastVideo(payload, isKeyframe = false) {
     for (const ws of this.wsClients) {
       if (ws.readyState === 1) {
-        // Backpressure protection: drop delta frames if client send buffer is backed up (> 64KB)
-        if (ws.bufferedAmount > 64 * 1024 && !isKeyframe) {
+        // Backpressure protection: drop delta frames if client send buffer is backed up (> 32KB)
+        if (ws.bufferedAmount > 32 * 1024 && !isKeyframe) {
           continue;
         }
         try { ws.send(payload, { binary: true }); } catch (_) { this.wsClients.delete(ws); }

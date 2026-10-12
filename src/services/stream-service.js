@@ -849,16 +849,14 @@ function buildPlayerHtml(serial, screenW, screenH) {
     .btn{width:38px;height:38px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:#e2e8f0;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer;transition:all .15s ease;user-select:none;flex-shrink:0}
     .btn:hover{background:rgba(56,189,248,.25);border-color:rgba(56,189,248,.5);color:#38bdf8}
     .btn:active{transform:scale(.9)}
-    .btn-red{background:rgba(239,68,68,.14);color:#f87171;border-color:rgba(239,68,68,.3)}
-    .btn-red:hover{background:rgba(239,68,68,.35);border-color:rgba(239,68,68,.7);color:#ffffff}
+    
+    /* Red button specifically for device reboot */
+    .btn-red{background:#dc2626 !important;color:#ffffff !important;border:1px solid #ef4444 !important;box-shadow:0 0 10px rgba(220,38,38,.45)}
+    .btn-red:hover{background:#ef4444 !important;transform:scale(1.06)}
+    .btn-red:active{transform:scale(.92)}
     
     .vol-slider-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 0 4px;width:100%;flex-shrink:0}
     .volume-slider-v{-webkit-appearance:slider-vertical;appearance:slider-vertical;writing-mode:bt-lr;width:6px;height:75px;background:rgba(255,255,255,.15);border-radius:4px;outline:none;cursor:pointer;accent-color:#22c55e}
-
-    /* Red Circular Floating Rotate Button (Matching Screenshot) */
-    .btn-floating-rotate{position:fixed;bottom:18px;right:64px;width:48px;height:48px;border-radius:50%;background:#dc2626;color:#ffffff;border:2px solid rgba(255,255,255,.25);box-shadow:0 6px 20px rgba(220,38,38,.55);display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:40;transition:transform .15s ease,background .15s ease}
-    .btn-floating-rotate:hover{background:#ef4444;transform:scale(1.08) rotate(15deg)}
-    .btn-floating-rotate:active{transform:scale(.92)}
 
     /* Modals */
     .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);z-index:100;align-items:center;justify-content:center}
@@ -875,15 +873,15 @@ function buildPlayerHtml(serial, screenW, screenH) {
   </div>
 </div>
 
-<!-- Floating Red Rotate Button (Matches user screenshot) -->
-<button tabindex="-1" onfocus="this.blur()" class="btn-floating-rotate" onclick="rotateScreen()" title="Rotate Screen (Orientation Switch)">
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-</button>
-
 <!-- Sleek Dark Control Sidebar (Right Side) -->
 <div class="sidebar">
   <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="toggleDebugModal()" title="Options & Diagnostics"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn btn-red" onclick="key(26)" title="Power"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>
+  
+  <!-- Red Button inside controls for Rebooting -->
+  <button tabindex="-1" onfocus="this.blur()" class="btn btn-red" onclick="reboot()" title="Reboot Device"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+  
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="rotateScreen()" title="Rotate Screen"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
+  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(26)" title="Power / Lock"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>
   <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(24)" title="Volume Up"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="19" y1="12" x2="19" y2="12"/><line x1="15" y1="9" x2="15" y2="15"/><line x1="12" y1="12" x2="18" y2="12"/></svg></button>
   <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(25)" title="Volume Down"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="15" y1="12" x2="20" y2="12"/></svg></button>
   <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(4)" title="Back"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="17 4 7 12 17 20 17 4"/></svg></button>
