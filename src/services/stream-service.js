@@ -212,8 +212,18 @@ function handleControl(type, data, serial, engine) {
     exec(`"${ADB_BIN}" -s ${serial} reboot`);
   } else if (type === 'expand_notifications' || type === 'notifications') {
     exec(`"${ADB_BIN}" -s ${serial} shell cmd statusbar expand`);
-  } else if (type === 'wake' || type === 'refresh') {
-    try { adbInput(serial, 'input keyevent 224'); } catch (_) {}
+  } else if (type === 'wake' || type === 'refresh' || type === 'request_keyframe') {
+    try {
+      if (engine && engine.controlSocket && !engine.controlSocket.destroyed) {
+        engine.sendKeycode(0, 224);
+        engine.sendKeycode(1, 224);
+      } else {
+        adbInput(serial, 'input keyevent 224');
+      }
+    } catch (_) {}
+    if (engine && typeof engine.broadcastKeyframe === 'function') {
+      engine.broadcastKeyframe();
+    }
   }
 }
 
@@ -1202,8 +1212,10 @@ function buildPlayerHtml(serial, screenW, screenH) {
           countFrame();
         },
         error: function(err) {
-          console.error('[Stream] VideoDecoder error:', err);
+          console.warn('[Stream] VideoDecoder error:', err);
           resetDecoder();
+          initDecoder();
+          send({ type: 'request_keyframe' });
         }
       });
       decoder.configure({
@@ -1220,7 +1232,8 @@ function buildPlayerHtml(serial, screenW, screenH) {
   }
 
   function isH264Keyframe(u8) {
-    for (let i = 0; i < Math.min(u8.length - 4, 256); i++) {
+    const limit = Math.min(u8.length - 4, 1024);
+    for (let i = 0; i < limit; i++) {
       if (u8[i] === 0 && u8[i+1] === 0) {
         let ntype = -1;
         if (u8[i+2] === 1 && i + 3 < u8.length) {
@@ -1235,20 +1248,42 @@ function buildPlayerHtml(serial, screenW, screenH) {
     return false;
   }
 
+  // ── Tab Visibility & Focus Resilience ─────────────────────────────────────
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') {
+      console.log('[Stream] Tab became active — refreshing decoder & requesting keyframe');
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(function(){});
+      if (!wsOk || !ws || ws.readyState !== 1) {
+        connectWS();
+      } else {
+        send({ type: 'request_keyframe' });
+        send({ type: 'wake' });
+      }
+    }
+  });
+
+  window.addEventListener('focus', function() {
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(function(){});
+    if (wsOk && ws && ws.readyState === 1) {
+      send({ type: 'request_keyframe' });
+    }
+  });
+
   // ── WebSocket connection ─────────────────────────────────────────────────
   let ws = null, wsOk = false;
   let wsFailCount = 0;
   let wsRetryTimer = null;
   let lastFrameReceivedTime = 0;
+  let lastKeyframeReqTime = 0;
 
   // Fallback watchdog: only fires if WS is connected but no frames arrive for >15s.
-  // 15s gives scrcpy time to start up before we fall back to HTTP screencap.
   setInterval(function() {
     if (!wsOk) return;
     if (lastFrameReceivedTime === 0) return;
     if (Date.now() - lastFrameReceivedTime > 15000 && !fbRunning) {
-      console.warn('[Watchdog] No frames for 15s — starting HTTP fallback');
-      startFallback();
+      console.warn('[Watchdog] No frames for 15s — requesting keyframe & wake');
+      send({ type: 'request_keyframe' });
+      send({ type: 'wake' });
     }
   }, 1000);
 
@@ -1258,8 +1293,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
     if (firstFrameTimer) clearTimeout(firstFrameTimer);
     firstFrameTimer = setTimeout(function() {
       if (wsOk && lastFrameReceivedTime === 0 && !fbRunning) {
-        console.warn('[Watchdog] No first frame within 12s — starting HTTP fallback');
-        startFallback();
+        console.warn('[Watchdog] No first frame within 12s — requesting keyframe');
+        send({ type: 'request_keyframe' });
+        send({ type: 'wake' });
       }
     }, 12000);
   }
@@ -1291,16 +1327,21 @@ function buildPlayerHtml(serial, screenW, screenH) {
       fbRunning = false;
       if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(function(){});
       flushQueue();
-      // Instantly nudge Android encoder to generate fresh keyframe
+      // Instantly request keyframe & wake Android encoder
+      send({ type: 'request_keyframe' });
       send({ type: 'wake' });
     };
 
     ws.onmessage = function(e) {
-      // JSON control messages (stream_reset, resolution_change, etc.)
+      // JSON control messages (stream_reset, resolution_change, heartbeat, etc.)
       if (typeof e.data === 'string' || e.data instanceof ArrayBuffer && e.data.byteLength > 0 && new Uint8Array(e.data)[0] === 0x7B) {
         try {
           const txt = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
           const msg = JSON.parse(txt);
+          if (msg.type === 'heartbeat') {
+            send({ type: 'pong' });
+            return;
+          }
           if (msg.type === 'resolution_change') {
             console.log('[Stream] Dynamic orientation/resolution update: ' + msg.width + 'x' + msg.height);
             nativeW = msg.width;
@@ -1323,13 +1364,17 @@ function buildPlayerHtml(serial, screenW, screenH) {
             }
             const dbgRes = document.getElementById('dbgRes');
             if (dbgRes) dbgRes.textContent = msg.width + ' x ' + msg.height;
+            send({ type: 'request_keyframe' });
             send({ type: 'wake' });
             return;
           } else if (msg.type === 'stream_reset') {
             console.log('[Stream] Server stream reset — reinitialising decoder');
             resetDecoder();
+            initDecoder();
             fbRunning = false;
             lastFrameReceivedTime = 0;
+            send({ type: 'request_keyframe' });
+            return;
           } else if (msg.type === 'stream_revoked') {
             console.warn('[Stream] Access revoked by administrator:', msg.reason);
             try { localStorage.removeItem('device_pin_auth_${serial}'); } catch (_) {}
@@ -1388,9 +1433,14 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
       const key = isH264Keyframe(u8);
       if (key) hasKeyframe = true;
-      if (!hasKeyframe) return; // Wait for initial keyframe/config (SPS/PPS)
-
-
+      if (!hasKeyframe) {
+        // Delta chunk received without an active keyframe — request keyframe immediately
+        if (Date.now() - lastKeyframeReqTime > 1000) {
+          lastKeyframeReqTime = Date.now();
+          send({ type: 'request_keyframe' });
+        }
+        return;
+      }
 
       try {
         const chunk = new EncodedVideoChunk({
@@ -1402,13 +1452,27 @@ function buildPlayerHtml(serial, screenW, screenH) {
       } catch (err) {
         hasKeyframe = false;
         console.warn('[Stream] H264 chunk decode error:', err);
+        send({ type: 'request_keyframe' });
         send({ type: 'wake' });
       }
     };
 
-    // Auto-nudge Android screen compositor if frame updates stall
+    // Auto-nudge Android screen compositor & request keyframe if frame updates stall
     setInterval(function() {
-      if (wsOk && (lastFrameReceivedTime > 0 && Date.now() - lastFrameReceivedTime > 2500)) {
+      if (!wsOk) return;
+      const now = Date.now();
+      if (lastFrameReceivedTime > 0 && (now - lastFrameReceivedTime > 2500)) {
+        if (now - lastKeyframeReqTime > 2000) {
+          lastKeyframeReqTime = now;
+          send({ type: 'request_keyframe' });
+          send({ type: 'wake' });
+        }
+      }
+      if (lastFrameReceivedTime > 0 && (now - lastFrameReceivedTime > 12000)) {
+        console.warn('[Watchdog] Stream idle for >12s — refreshing decoder & requesting keyframe');
+        resetDecoder();
+        initDecoder();
+        send({ type: 'request_keyframe' });
         send({ type: 'wake' });
       }
     }, 2000);
@@ -1486,11 +1550,19 @@ function buildPlayerHtml(serial, screenW, screenH) {
   let lastMoveTime = 0;
   let lastX = -1, lastY = -1;
 
+  function ensureActiveOnInteraction() {
+    initAudio();
+    if (Date.now() - lastFrameReceivedTime > 1500 || !hasKeyframe) {
+      send({ type: 'request_keyframe' });
+      send({ type: 'wake' });
+    }
+  }
+
   // Native Touch Listeners (Mobile / Tablet browsers with raw 0ms latency)
   function handleTouchStart(e) {
     isNativeTouchActive = true;
     e.preventDefault();
-    initAudio();
+    ensureActiveOnInteraction();
     const c = coords(e);
     lastX = c.x; lastY = c.y;
     lastMoveTime = performance.now();
@@ -1537,7 +1609,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     isPointerDown = true;
     activePointerId = e.pointerId;
     try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-    initAudio();
+    ensureActiveOnInteraction();
     const c = coords(e);
     lastX = c.x; lastY = c.y;
     lastMoveTime = performance.now();
@@ -1895,9 +1967,41 @@ async function startStreamServer(serial, port, aliasSerial) {
       }
     }, 10000);
 
+    // Heartbeat keepalive every 10 seconds to keep Cloudflare Tunnel & proxies active
+    const wsHeartbeatTimer = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.ping();
+          ws.send(JSON.stringify({ type: 'heartbeat', time: Date.now() }));
+        } catch (_) {}
+      } else {
+        clearInterval(wsHeartbeatTimer);
+      }
+    }, 10000);
+
     ws.on('message', (msg) => {
       try {
         const data = JSON.parse(msg.toString());
+        if (data.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong', time: Date.now() }));
+          return;
+        }
+        if (data.type === 'pong' || data.type === 'heartbeat') {
+          return;
+        }
+        if (data.type === 'request_keyframe') {
+          effectiveWsEngine.sendKeyframeToClient(ws);
+          return;
+        }
+        if (data.type === 'wake' || data.type === 'refresh') {
+          effectiveWsEngine.sendKeyframeToClient(ws);
+        }
+        // If user touches while idle, immediately prime with fresh keyframe
+        if (data.type === 'touch' && data.action === 0) {
+          if (ws._needsKeyframe || (Date.now() - (effectiveWsEngine.lastDataTime || 0) > 1500)) {
+            effectiveWsEngine.sendKeyframeToClient(ws);
+          }
+        }
         handleControl(data.type, data, effectiveWsSerial, effectiveWsEngine);
       } catch (_) {}
     });
@@ -1905,6 +2009,7 @@ async function startStreamServer(serial, port, aliasSerial) {
     const cleanup = () => {
       effectiveWsEngine.removeClient(ws);
       clearInterval(authWatcherTimer);
+      clearInterval(wsHeartbeatTimer);
     };
     ws.on('close', cleanup);
     ws.on('error', cleanup);

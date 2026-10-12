@@ -101,6 +101,7 @@ async function applyDeviceStealth(serial, stealthRootEnabled = true) {
     'settings put system show_touches 0',
     'settings put global stay_awake 3',
     'settings put system stay_awake 3',
+    'settings put system screen_off_timeout 2147483647',
     'svc power stayon true',
     'input keyevent 224',
     'input keyevent 82',
