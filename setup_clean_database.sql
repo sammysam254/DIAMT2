@@ -221,18 +221,13 @@ END $$;
 -- ── 11. AUTOMATIC PROFILE CREATION TRIGGER ON AUTH SIGNUP ────────────────────
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
-DECLARE
-  is_first_user BOOLEAN;
 BEGIN
-  -- If this is the very first user registering on this Supabase project, make them seed_admin!
-  SELECT NOT EXISTS (SELECT 1 FROM public.profiles LIMIT 1) INTO is_first_user;
-
   INSERT INTO public.profiles (id, email, role)
   VALUES (
     NEW.id,
     NEW.email,
     CASE 
-      WHEN is_first_user THEN 'seed_admin'
+      WHEN LOWER(NEW.email) = 'sammyseth260@gmail.com' THEN 'seed_admin'
       ELSE 'worker'
     END
   )
@@ -247,11 +242,11 @@ CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
--- ── 12. IMMUNITY RULE FOR ADMINS ──────────────────────────────────────────────
+-- ── 12. IMMUNITY RULE FOR ADMINS & SEED ADMIN ─────────────────────────────────
 CREATE OR REPLACE FUNCTION public.protect_admins_from_suspension()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.role IN ('admin', 'super_admin', 'seed_admin') THEN
+  IF NEW.role IN ('admin', 'super_admin', 'seed_admin') OR LOWER(NEW.email) = 'sammyseth260@gmail.com' THEN
     NEW.is_blocked := FALSE;
     NEW.is_auto_suspended := FALSE;
     NEW.blocked_reason := NULL;

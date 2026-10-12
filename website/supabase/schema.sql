@@ -113,18 +113,13 @@ CREATE TABLE IF NOT EXISTS public.device_assignments (
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
-DECLARE
-  is_first_user BOOLEAN;
 BEGIN
-  -- If this is the very first user registering on this Supabase project, make them seed_admin!
-  SELECT NOT EXISTS (SELECT 1 FROM public.profiles LIMIT 1) INTO is_first_user;
-
   INSERT INTO public.profiles (id, email, role)
   VALUES (
     NEW.id,
     NEW.email,
     CASE 
-      WHEN is_first_user THEN 'seed_admin'
+      WHEN LOWER(NEW.email) = 'sammyseth260@gmail.com' THEN 'seed_admin'
       ELSE 'worker'
     END
   )
