@@ -38,10 +38,10 @@ echo.
 :: ── Auto-close target developer processes before running ─────────────────
 echo [*] Stopping previous developer processes...
 "%PS%" -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$myParentPid = (Get-CimInstance Win32_Process -Filter \"ProcessId = $PID\").ParentProcessId; " ^
+  "$ancestorPids = @($PID); $curr = $PID; while ($true) { try { $p = (Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $curr) -ErrorAction SilentlyContinue).ParentProcessId; if ($p -and $p -gt 0 -and $p -notin $ancestorPids) { $ancestorPids += $p; $curr = $p } else { break } } catch { break } }; " ^
   "$processesToKill = @('electron', 'adb', 'node', 'git', 'cmd', 'powershell', 'pwsh'); " ^
   "foreach ($procName in $processesToKill) { " ^
-  "    Get-Process -Name $procName -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID -and $_.Id -ne $myParentPid } | Stop-Process -Force -ErrorAction SilentlyContinue " ^
+  "    Get-Process -Name $procName -ErrorAction SilentlyContinue | Where-Object { $_.Id -notin $ancestorPids } | Stop-Process -Force -ErrorAction SilentlyContinue " ^
   "}; " ^
   "Write-Host '[+] Target developer processes stopped successfully!' -ForegroundColor Green"
 taskkill /F /IM cloudflared.exe /T >nul 2>&1
