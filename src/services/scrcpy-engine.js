@@ -213,7 +213,7 @@ class ScrcpyEngine extends EventEmitter {
     this.scrcpyVideoHeight = 0;
     this._jarPushed = false;
     this._screencapActive = false;
-    this.enableAudio = false;
+    this.enableAudio = true;
     this.audioSocket = null;
   }
 
@@ -264,6 +264,7 @@ class ScrcpyEngine extends EventEmitter {
     try {
       // 0. Force-kill any lingering scrcpy/app_process on device to release localabstract:scrcpy
       try {
+        await this._adb(['shell', 'pkill', '-9', '-f', 'app_process']).catch(() => {});
         await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
         await new Promise(r => setTimeout(r, 200));
       } catch (_) {}
@@ -327,7 +328,7 @@ class ScrcpyEngine extends EventEmitter {
       'tunnel_forward=true',
       'audio=' + (this.enableAudio ? 'true' : 'false'),
       'audio_codec=opus',
-      'audio_bit_rate=128000',
+      'audio_bit_rate=64000',
       'control=true',
       'cleanup=false',
       'send_dummy_byte=true',

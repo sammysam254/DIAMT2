@@ -147,7 +147,7 @@ function createCloudflaredTunnel(port) {
 
     const args = token 
       ? ['tunnel', 'run', '--token', token]
-      : ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'];
+      : ['tunnel', '--url', `http://127.0.0.1:${port}`, '--protocol', 'quic', '--ha-connections', '1', '--no-autoupdate'];
 
     try {
       const tunnelProcess = spawn(binPath, args, {
@@ -268,26 +268,25 @@ async function createTunnelWithRetry(port) {
     }
   }
 
-  // 1. Try Cloudflared (fast edge routing)
-  try {
-    logger.info(`[+] Tunnel creation attempt (Cloudflare) for port ${port}`);
-    return await createCloudflaredTunnel(port);
-  } catch (err) {
-    logger.warn(`[-] Cloudflare tunnel attempt 1 notice: ${err.message}`);
+  // 1. Try Cloudflared (fast edge routing with QUIC)
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      logger.info(`[+] Tunnel creation attempt ${attempt}/3 (Cloudflare QUIC) for port ${port}`);
+      return await createCloudflaredTunnel(port);
+    } catch (err) {
+      logger.warn(`[-] Cloudflare tunnel attempt ${attempt} notice: ${err.message}`);
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 2000 * attempt));
+      }
+    }
   }
 
-  // 2. Try Localtunnel fallback
+  // 2. Only if Cloudflare repeatedly fails, use Localtunnel fallback as emergency
   try {
+    logger.warn(`[!] Cloudflare unavailable after 3 attempts — attempting Localtunnel fallback...`);
     return await createLocaltunnelFallback(port);
   } catch (err) {
     logger.warn(`[-] Localtunnel fallback notice: ${err.message}`);
-  }
-
-  // 3. Final attempt with Cloudflare
-  try {
-    return await createCloudflaredTunnel(port);
-  } catch (err) {
-    logger.warn(`[-] Cloudflare final fallback failed: ${err.message}`);
   }
 
   return { publicUrl: `http://localhost:${port}`, tunnelProcess: null };
