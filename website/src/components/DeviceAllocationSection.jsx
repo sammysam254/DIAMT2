@@ -337,10 +337,18 @@ export default function DeviceAllocationSection({ currentUser }) {
                             style={{ color: 'var(--primary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                             onClick={(e) => {
                               e.preventDefault();
-                              const w = 510, h = 900;
-                              const left = Math.max(0, Math.round((window.screen.width - w) / 2));
-                              const top = Math.max(0, Math.round((window.screen.height - h) / 2));
-                              window.open(a.devices.stream_url, `Stream_${a.devices?.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                              const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
+                              if (isMobile) {
+                                window.open(a.devices.stream_url, '_blank');
+                              } else {
+                                const screenW = window.screen.availWidth || window.screen.width || 1280;
+                                const screenH = window.screen.availHeight || window.screen.height || 900;
+                                const w = Math.min(screenW - 20, 520);
+                                const h = Math.min(screenH - 40, 940);
+                                const left = Math.max(0, Math.round((screenW - w) / 2));
+                                const top = Math.max(0, Math.round((screenH - h) / 2));
+                                window.open(a.devices.stream_url, `Stream_${a.devices?.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                              }
                             }}
                           >
                             Open Stream <ExternalLink size={12} />

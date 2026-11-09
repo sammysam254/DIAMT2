@@ -369,10 +369,18 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
                     if (!u) u = `http://localhost:8100/?udid=${encodeURIComponent(focusDevice.serial || '')}`;
                     else if (typeof window !== 'undefined' && window.location.protocol === 'https:' && u.startsWith('http://') && !u.includes('localhost') && !u.includes('127.0.0.1')) u = u.replace(/^http:/, 'https:');
                     if (focusDevice.serial && !u.includes('udid=')) u += (u.includes('?') ? '&' : '?') + `udid=${encodeURIComponent(focusDevice.serial)}`;
-                    const w = 510, h = 900;
-                    const left = Math.max(0, Math.round((window.screen.width - w) / 2));
-                    const top = Math.max(0, Math.round((window.screen.height - h) / 2));
-                    window.open(u, `Stream_${focusDevice.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                    const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
+                    if (isMobile) {
+                      window.open(u, '_blank');
+                    } else {
+                      const screenW = window.screen.availWidth || window.screen.width || 1280;
+                      const screenH = window.screen.availHeight || window.screen.height || 900;
+                      const w = Math.min(screenW - 20, 520);
+                      const h = Math.min(screenH - 40, 940);
+                      const left = Math.max(0, Math.round((screenW - w) / 2));
+                      const top = Math.max(0, Math.round((screenH - h) / 2));
+                      window.open(u, `Stream_${focusDevice.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                    }
                   }} 
                   className="btn btn-primary" 
                   style={{ padding: '6px 14px', fontSize: '12px' }}

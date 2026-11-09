@@ -150,8 +150,9 @@ function handleControl(type, data, serial, engine) {
   } else if (type === 'tap') {
     const x = parseFloat(get(data, 'x')), y = parseFloat(get(data, 'y'));
     if (ctrlOk()) {
-      engine.sendTouchEvent(0, x, y, W, H, 0.4);
-      setTimeout(() => engine.sendTouchEvent(1, x, y, W, H, 0), 80);
+      engine.sendTouchEvent(0, x, y, W, H, 0.32);
+      const tapDuration = 75 + Math.floor(Math.random() * 35);
+      setTimeout(() => engine.sendTouchEvent(1, x, y, W, H, 0), tapDuration);
     } else {
       const sx = Math.round((x / W) * realW);
       const sy = Math.round((y / H) * realH);
@@ -221,9 +222,6 @@ function handleControl(type, data, serial, engine) {
         adbInput(serial, 'input keyevent 224');
       }
     } catch (_) {}
-    if (engine && typeof engine.broadcastKeyframe === 'function') {
-      engine.broadcastKeyframe();
-    }
   }
 }
 
@@ -852,40 +850,240 @@ function buildPlayerHtml(serial, screenW, screenH) {
   <title>Stream ${serial}</title>
   <style>
     *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
-    html,body{height:100%;width:100%;background:#000;color:#f8fafc;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;overflow:hidden;touch-action:none;overscroll-behavior:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
-    body{display:flex;flex-direction:row;align-items:stretch;justify-content:center;-webkit-tap-highlight-color:transparent}
+    html,body{
+      height: 100%;
+      height: 100dvh;
+      width: 100%;
+      width: 100vw;
+      background: #000;
+      color: #f8fafc;
+      font-family: system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
+      overflow: hidden;
+      overscroll-behavior: none;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    body{
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      justify-content: center;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 100%;
+      min-height: -webkit-fill-available;
+    }
 
     /* Main Phone/Tablet Viewing Stage */
-    .stage{flex:1;height:100vh;width:calc(100vw - 52px);min-width:0;display:flex;align-items:center;justify-content:center;background:#000;position:relative;overflow:hidden;touch-action:none;overscroll-behavior:none}
-    .wrap{position:relative;display:flex;align-items:center;justify-content:center;height:100vh;width:100%;background:#000;overflow:hidden;touch-action:none;overscroll-behavior:none}
+    .stage{
+      flex: 1;
+      height: 100%;
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      position: relative;
+      overflow: hidden;
+      touch-action: none;
+      overscroll-behavior: none;
+    }
+    .wrap{
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      width: 100%;
+      background: #000;
+      overflow: hidden;
+      touch-action: none;
+      overscroll-behavior: none;
+    }
     
-    /* Enlarged Canvas: fills 100vh cleanly with natural aspect ratio, expands wide for tablets/landscape */
-    canvas{display:block;height:100vh;max-height:100vh;width:auto;max-width:calc(100vw - 52px);object-fit:contain;cursor:default;touch-action:none;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+    /* Enlarged Canvas: fills container cleanly with natural aspect ratio without cropping */
+    canvas{
+      display: block;
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: 100%;
+      cursor: default;
+      touch-action: none;
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: auto;
+      margin: auto;
+    }
 
-    /* Sleek Right Sidebar flush against edge */
-    .sidebar{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:6px;width:50px;background:rgba(18,22,34,.98);border-left:1px solid rgba(255,255,255,.08);padding:8px 4px;height:100vh;overflow-y:auto;overflow-x:hidden;flex-shrink:0;z-index:20;box-shadow:-5px 0 25px rgba(0,0,0,.6)}
-    .btn{width:38px;height:38px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:#e2e8f0;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer;transition:all .15s ease;user-select:none;flex-shrink:0}
+    /* Sleek Desktop Right Sidebar */
+    .sidebar{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      width: 52px;
+      background: rgba(18,22,34,.98);
+      border-left: 1px solid rgba(255,255,255,.08);
+      padding: 8px 4px;
+      height: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      flex-shrink: 0;
+      z-index: 20;
+      box-shadow: -5px 0 25px rgba(0,0,0,.6);
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+    }
+    .sidebar-top{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+    }
+    .sidebar-nav{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.12);
+    }
+
+    .btn{
+      width: 40px;
+      height: 40px;
+      background: rgba(255,255,255,.08);
+      border: 1px solid rgba(255,255,255,.12);
+      color: #e2e8f0;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      cursor: pointer;
+      transition: all .15s ease;
+      user-select: none;
+      flex-shrink: 0;
+      touch-action: manipulation;
+    }
     .btn:hover{background:rgba(56,189,248,.25);border-color:rgba(56,189,248,.5);color:#38bdf8}
-    .btn:active{transform:scale(.9)}
+    .btn:active{transform:scale(.92)}
+    
+    .btn-nav{
+      background: rgba(56,189,248,.12);
+      border-color: rgba(56,189,248,.28);
+      color: #38bdf8;
+    }
+    .btn-nav:hover{
+      background: rgba(56,189,248,.32);
+      color: #fff;
+    }
     
     /* Red button specifically for device reboot */
     .btn-red{background:#dc2626 !important;color:#ffffff !important;border:1px solid #ef4444 !important;box-shadow:0 0 10px rgba(220,38,38,.45)}
     .btn-red:hover{background:#ef4444 !important;transform:scale(1.06)}
     .btn-red:active{transform:scale(.92)}
     
-    .vol-slider-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 0 4px;width:100%;flex-shrink:0}
-    .volume-slider-v{-webkit-appearance:slider-vertical;appearance:slider-vertical;writing-mode:bt-lr;width:6px;height:75px;background:rgba(255,255,255,.15);border-radius:4px;outline:none;cursor:pointer;accent-color:#22c55e}
+    .vol-slider-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 0;width:100%;flex-shrink:0}
+    .volume-slider-v{-webkit-appearance:slider-vertical;appearance:slider-vertical;writing-mode:bt-lr;width:6px;height:65px;background:rgba(255,255,255,.15);border-radius:4px;outline:none;cursor:pointer;accent-color:#22c55e}
 
-    @media (max-width: 600px) {
-      .sidebar{width:44px;padding:6px 2px}
-      .btn{width:36px;height:36px;font-size:14px;border-radius:8px}
-      .stage{width:calc(100vw - 44px)}
-      canvas{max-width:calc(100vw - 44px)}
+    /* Mobile Bottom Navigation Bar (Hidden on desktop, prominent & pinned on mobile) */
+    .mobile-nav-bar{
+      display: none;
+      width: 100%;
+      height: calc(46px + env(safe-area-inset-bottom, 0px));
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      background: rgba(10, 14, 23, 0.96);
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+      flex-shrink: 0;
+      z-index: 40;
+      box-shadow: 0 -3px 20px rgba(0,0,0,0.8);
+      backdrop-filter: blur(16px);
+      align-items: center;
+      justify-content: space-evenly;
+      padding-left: 6px;
+      padding-right: 6px;
+    }
+
+    .mnav-btn{
+      flex: 1;
+      max-width: 54px;
+      height: 38px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #e2e8f0;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      cursor: pointer;
+      touch-action: manipulation;
+      transition: all .12s ease;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    .mnav-btn:active{
+      background: rgba(56, 189, 248, 0.35);
+      color: #38bdf8;
+      transform: scale(0.92);
+    }
+    .mnav-btn-nav{
+      background: rgba(56, 189, 248, 0.14);
+      border-color: rgba(56, 189, 248, 0.3);
+      color: #38bdf8;
+    }
+
+    /* Mobile Responsive Adaptation: NO side controls on mobile, device fills screen */
+    @media (max-width: 900px), (pointer: coarse), (hover: none) {
+      body{
+        flex-direction: column !important;
+      }
+      .sidebar{
+        display: none !important;
+      }
+      .mobile-nav-bar{
+        display: flex !important;
+      }
+      .stage{
+        width: 100vw !important;
+        height: calc(100dvh - 46px - env(safe-area-inset-bottom, 0px)) !important;
+      }
+      canvas{
+        max-width: 100vw !important;
+        max-height: calc(100dvh - 46px - env(safe-area-inset-bottom, 0px)) !important;
+      }
+    }
+
+    /* Explicit mobile class for guaranteed mobile experience */
+    body.is-mobile-device{
+      flex-direction: column !important;
+    }
+    body.is-mobile-device .sidebar{
+      display: none !important;
+    }
+    body.is-mobile-device .mobile-nav-bar{
+      display: flex !important;
+    }
+    body.is-mobile-device .stage{
+      width: 100vw !important;
+      height: calc(100dvh - 46px - env(safe-area-inset-bottom, 0px)) !important;
+    }
+    body.is-mobile-device canvas{
+      max-width: 100vw !important;
+      max-height: calc(100dvh - 46px - env(safe-area-inset-bottom, 0px)) !important;
     }
 
     /* Modals */
     .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);z-index:100;align-items:center;justify-content:center}
-    .mbox{background:#0f172a;border:1px solid rgba(56,189,248,.4);border-radius:14px;padding:18px;width:90%;max-width:380px;box-shadow:0 20px 30px rgba(0,0,0,.6)}
+    .mbox{background:#0f172a;border:1px solid rgba(56,189,248,.4);border-radius:14px;padding:18px;width:92%;max-width:400px;box-shadow:0 20px 30px rgba(0,0,0,.6);max-height:90vh;overflow-y:auto}
     .minput{width:100%;padding:9px 12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);border-radius:9px;color:#fff;font-size:14px;margin-bottom:12px;outline:none}
     .mbtn{width:100%;padding:9px;background:#38bdf8;color:#0f172a;border:none;border-radius:9px;font-weight:700;cursor:pointer}
   </style>
@@ -894,33 +1092,49 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
 <div class="stage">
   <div class="wrap" id="wrap">
-    <canvas id="c" width="${screenW}" height="${screenH}"></canvas>
+    <canvas id="c" width="${screenW}" height="${screenH}" style="aspect-ratio: ${screenW} / ${screenH};"></canvas>
   </div>
 </div>
 
-<!-- Sleek Dark Control Sidebar (Right Side) -->
+<!-- Sleek Dark Control Sidebar (Desktop Right Side) -->
 <div class="sidebar">
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="toggleDebugModal()" title="Options & Diagnostics"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
-  
-  <!-- Red Button inside controls for Rebooting -->
-  <button tabindex="-1" onfocus="this.blur()" class="btn btn-red" onclick="reboot()" title="Reboot Device"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
-  
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="rotateScreen()" title="Rotate Screen"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(26)" title="Power / Lock"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(24)" title="Volume Up"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="19" y1="12" x2="19" y2="12"/><line x1="15" y1="9" x2="15" y2="15"/><line x1="12" y1="12" x2="18" y2="12"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(25)" title="Volume Down"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="15" y1="12" x2="20" y2="12"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(4)" title="Back"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="17 4 7 12 17 20 17 4"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(3)" title="Home"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="8"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(187)" title="Recents / App Switcher"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="screenshot()" title="Take Screenshot"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="openText()" title="Send Text"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="7" y1="16" x2="17" y2="16"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="openUpload()" title="Upload File to Phone"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
-  <button tabindex="-1" onfocus="this.blur()" class="btn" id="muteBtn" onclick="toggleMute()" title="Mute/Unmute Audio"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></button>
-  
-  <!-- Vertical Green Volume Slider -->
-  <div class="vol-slider-box" title="Volume Slider">
-    <input tabindex="-1" onfocus="this.blur()" type="range" min="0" max="100" value="100" class="volume-slider-v" id="volSlider" oninput="setVolume(this.value)"/>
+  <div class="sidebar-top">
+    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="toggleDebugModal()" title="Options & Diagnostics"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
+    
+    <!-- Red Button inside controls for Rebooting -->
+    <button tabindex="-1" onfocus="this.blur()" class="btn btn-red" onclick="reboot()" title="Reboot Device"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+    
+    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="rotateScreen()" title="Rotate Screen"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(26)" title="Power / Lock"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(24)" title="Volume Up"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="19" y1="12" x2="19" y2="12"/><line x1="15" y1="9" x2="15" y2="15"/><line x1="12" y1="12" x2="18" y2="12"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="key(25)" title="Volume Down"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="15" y1="12" x2="20" y2="12"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="screenshot()" title="Take Screenshot"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="openText()" title="Send Text"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="7" y1="16" x2="17" y2="16"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn" onclick="openUpload()" title="Upload File to Phone"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn" id="muteBtn" onclick="toggleMute()" title="Mute/Unmute Audio"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></button>
+    
+    <!-- Vertical Green Volume Slider -->
+    <div class="vol-slider-box" title="Volume Slider">
+      <input tabindex="-1" onfocus="this.blur()" type="range" min="0" max="100" value="100" class="volume-slider-v" id="volSlider" oninput="setVolume(this.value)"/>
+    </div>
   </div>
+
+  <!-- Dedicated Phone Navigation Bar Group (Back, Home, Recents) -->
+  <div class="sidebar-nav">
+    <button tabindex="-1" onfocus="this.blur()" class="btn btn-nav" onclick="key(4)" title="Back"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="17 4 7 12 17 20 17 4"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn btn-nav" onclick="key(3)" title="Home"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="8"/></svg></button>
+    <button tabindex="-1" onfocus="this.blur()" class="btn btn-nav" onclick="key(187)" title="Recents / App Switcher"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
+  </div>
+</div>
+
+<!-- Mobile Bottom Navigation Bar (Always visible & docked on mobile screens) -->
+<div class="mobile-nav-bar">
+  <button class="mnav-btn mnav-btn-nav" onclick="key(4)" title="Back (◁)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="17 4 7 12 17 20 17 4"/></svg></button>
+  <button class="mnav-btn mnav-btn-nav" onclick="key(3)" title="Home (○)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="8"/></svg></button>
+  <button class="mnav-btn mnav-btn-nav" onclick="key(187)" title="Recents (□)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
+  <button class="mnav-btn" onclick="key(26)" title="Power / Lock"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></button>
+  <button class="mnav-btn" onclick="rotateScreen()" title="Rotate Screen"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
+  <button class="mnav-btn" onclick="toggleDebugModal()" title="Options & Tools"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
 </div>
 
 <div class="modal" id="textModal">
@@ -940,19 +1154,34 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
 <div class="modal" id="debugModal">
   <div class="mbox">
-    <div style="font-weight:700;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
-      <span>🐞 Stream Options &amp; Diagnostics</span>
-      <button onclick="document.getElementById('debugModal').style.display='none'" style="background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer">&times;</button>
+    <div style="font-weight:700;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:16px">📱 Device Controls &amp; Options</span>
+      <button onclick="document.getElementById('debugModal').style.display='none'" style="background:none;border:none;color:#94a3b8;font-size:22px;cursor:pointer;line-height:1">&times;</button>
     </div>
-    <div style="display:flex;flex-direction:column;gap:10px;font-size:13px;color:#94a3b8">
+
+    <!-- Quick Tools Grid (Essential on mobile) -->
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px">
+      <button class="mbtn" onclick="screenshot()" style="background:rgba(255,255,255,0.08);color:#e2e8f0;padding:8px 10px;font-size:12px;font-weight:600">📸 Screenshot</button>
+      <button class="mbtn" onclick="openText()" style="background:rgba(255,255,255,0.08);color:#e2e8f0;padding:8px 10px;font-size:12px;font-weight:600">⌨️ Send Text</button>
+      <button class="mbtn" onclick="openUpload()" style="background:rgba(255,255,255,0.08);color:#e2e8f0;padding:8px 10px;font-size:12px;font-weight:600">📁 Upload File</button>
+      <button class="mbtn" onclick="toggleMute()" id="modalMuteBtn" style="background:rgba(255,255,255,0.08);color:#e2e8f0;padding:8px 10px;font-size:12px;font-weight:600">🔊 Mute/Unmute</button>
+      <button class="mbtn" onclick="key(24)" style="background:rgba(255,255,255,0.08);color:#e2e8f0;padding:8px 10px;font-size:12px;font-weight:600">🔊 Vol Up</button>
+      <button class="mbtn" onclick="key(25)" style="background:rgba(255,255,255,0.08);color:#e2e8f0;padding:8px 10px;font-size:12px;font-weight:600">🔉 Vol Down</button>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <button class="mbtn" onclick="reboot()" style="background:#dc2626;color:#ffffff;font-size:13px;padding:9px">🔄 Reboot Device</button>
+    </div>
+
+    <div style="border-top:1px solid rgba(255,255,255,0.1);padding-top:12px;display:flex;flex-direction:column;gap:8px;font-size:12px;color:#94a3b8">
       <div>Device Serial: <strong style="color:#fff">${serial}</strong></div>
       <div>Stream Resolution: <strong style="color:#38bdf8" id="dbgRes">--</strong></div>
       <div>Stream Status: <strong style="color:#34d399" id="modeText">CONNECTING</strong> (<span id="fps">--fps</span>)</div>
       <div>Decoder Engine: <strong style="color:#34d399" id="dbgCodec">WebCodecs Hardware</strong></div>
       <div>WebSocket State: <strong style="color:#c084fc" id="dbgWs">--</strong></div>
       <div style="display:flex;gap:8px;margin-top:10px">
-        <button class="mbtn" onclick="reconnectStream()" style="flex:1">🔄 Reconnect</button>
-        <button class="mbtn" onclick="popOutWindow()" style="flex:1;background:rgba(255,255,255,0.12);color:#fff">🗗 Pop Out</button>
+        <button class="mbtn" onclick="reconnectStream()" style="flex:1;padding:8px;font-size:12px">🔄 Reconnect</button>
+        <button class="mbtn" onclick="popOutWindow()" style="flex:1;background:rgba(255,255,255,0.12);color:#fff;padding:8px;font-size:12px">🗗 Pop Out</button>
       </div>
     </div>
   </div>
@@ -967,6 +1196,20 @@ function buildPlayerHtml(serial, screenW, screenH) {
   const fpsEl  = document.getElementById('fps');
 
   let nativeW = ${screenW}, nativeH = ${screenH};
+
+  // ── Mobile Device Detection (No side controls, full-screen canvas on mobile) ──
+  function updateMobileMode() {
+    const isMob = /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent) || 
+      (window.matchMedia && window.matchMedia('(max-width: 900px), (pointer: coarse), (hover: none)').matches);
+    if (isMob) {
+      document.body.classList.add('is-mobile-device');
+    } else {
+      document.body.classList.remove('is-mobile-device');
+    }
+  }
+  updateMobileMode();
+  window.addEventListener('resize', updateMobileMode);
+  window.addEventListener('orientationchange', updateMobileMode);
 
   // ── FPS counter ─────────────────────────────────────────────────────────
   let fc = 0, fpsT = performance.now();
@@ -991,6 +1234,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     const h = f.displayHeight || f.codedHeight || f.height;
     if (w && h && (canvas.width !== w || canvas.height !== h)) {
       canvas.width = w; canvas.height = h; nativeW = w; nativeH = h;
+      canvas.style.aspectRatio = w + ' / ' + h;
       console.log('[Canvas] Resized to ' + w + 'x' + h);
     }
     ctx.drawImage(f, 0, 0, canvas.width, canvas.height);
@@ -1206,7 +1450,10 @@ function buildPlayerHtml(serial, screenW, screenH) {
           const h = frame.displayHeight || frame.codedHeight || frame.height;
           if (w && h && (canvas.width !== w || canvas.height !== h)) {
             canvas.width = w; canvas.height = h; nativeW = w; nativeH = h;
+            canvas.style.aspectRatio = w + ' / ' + h;
           }
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
           ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
           frame.close();
           countFrame();
@@ -1219,7 +1466,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
         }
       });
       decoder.configure({
-        codec: 'avc1.42E01E',
+        codec: 'avc1.42E02A',
         optimizeForLatency: true,
         hardwareAcceleration: 'prefer-hardware'
       });
@@ -1348,12 +1595,13 @@ function buildPlayerHtml(serial, screenW, screenH) {
             nativeH = msg.height;
             canvas.width = msg.width;
             canvas.height = msg.height;
+            canvas.style.aspectRatio = msg.width + ' / ' + msg.height;
             hasKeyframe = false;
             // Cleanly reconfigure or reset decoder for the new dimensions
             if (decoder && decoder.state !== 'closed') {
               try {
                 decoder.configure({
-                  codec: 'avc1.42E01E',
+                  codec: 'avc1.42E02A',
                   optimizeForLatency: true,
                   hardwareAcceleration: 'prefer-hardware'
                 });
@@ -1457,22 +1705,16 @@ function buildPlayerHtml(serial, screenW, screenH) {
       }
     };
 
-    // Auto-nudge Android screen compositor & request keyframe if frame updates stall
+    // Auto-nudge Android screen compositor & request keyframe ONLY if keyframe has not been acquired yet
     setInterval(function() {
       if (!wsOk) return;
       const now = Date.now();
-      if (lastFrameReceivedTime > 0 && (now - lastFrameReceivedTime > 2500)) {
-        if (now - lastKeyframeReqTime > 2000) {
-          lastKeyframeReqTime = now;
-          send({ type: 'request_keyframe' });
-          send({ type: 'wake' });
-        }
-      }
-      if (lastFrameReceivedTime > 0 && (now - lastFrameReceivedTime > 12000)) {
-        console.warn('[Watchdog] Stream idle for >12s — refreshing decoder & requesting keyframe');
-        resetDecoder();
-        initDecoder();
+      if (!hasKeyframe && (now - lastKeyframeReqTime > 2000)) {
+        lastKeyframeReqTime = now;
         send({ type: 'request_keyframe' });
+        send({ type: 'wake' });
+      }
+      if (lastFrameReceivedTime > 0 && (now - lastFrameReceivedTime > 30000)) {
         send({ type: 'wake' });
       }
     }, 2000);
@@ -1552,7 +1794,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
   function ensureActiveOnInteraction() {
     initAudio();
-    if (Date.now() - lastFrameReceivedTime > 1500 || !hasKeyframe) {
+    if (!hasKeyframe) {
       send({ type: 'request_keyframe' });
       send({ type: 'wake' });
     }
@@ -1798,11 +2040,18 @@ function buildPlayerHtml(serial, screenW, screenH) {
   }
 
   function popOutWindow() {
+    const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
+    if (isMobile) {
+      window.open(window.location.href, '_blank');
+      return;
+    }
     const isWide = (canvas.width > canvas.height) || (nativeW > nativeH);
-    const width = isWide ? 1080 : 540;
-    const height = isWide ? 760 : 980;
-    const left = Math.max(0, Math.round((window.screen.width - width) / 2));
-    const top = Math.max(0, Math.round((window.screen.height - height) / 2));
+    const screenW = window.screen.availWidth || window.screen.width || 1280;
+    const screenH = window.screen.availHeight || window.screen.height || 900;
+    const width = Math.min(screenW - 20, isWide ? 1080 : 520);
+    const height = Math.min(screenH - 40, isWide ? 760 : 940);
+    const left = Math.max(0, Math.round((screenW - width) / 2));
+    const top = Math.max(0, Math.round((screenH - height) / 2));
     window.open(window.location.href, 'Stream_${serial}', 'width=' + width + ',height=' + height + ',top=' + top + ',left=' + left + ',resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes');
   }
 
@@ -1990,17 +2239,12 @@ async function startStreamServer(serial, port, aliasSerial) {
           return;
         }
         if (data.type === 'request_keyframe') {
+          // Send SPS/PPS config so decoder can initialize cleanly
           effectiveWsEngine.sendKeyframeToClient(ws);
           return;
         }
         if (data.type === 'wake' || data.type === 'refresh') {
-          effectiveWsEngine.sendKeyframeToClient(ws);
-        }
-        // If user touches while idle, immediately prime with fresh keyframe
-        if (data.type === 'touch' && data.action === 0) {
-          if (ws._needsKeyframe || (Date.now() - (effectiveWsEngine.lastDataTime || 0) > 1500)) {
-            effectiveWsEngine.sendKeyframeToClient(ws);
-          }
+          // Forwarded to handleControl below
         }
         handleControl(data.type, data, effectiveWsSerial, effectiveWsEngine);
       } catch (_) {}

@@ -17,6 +17,7 @@ const ADB_BIN = (() => {
 })();
 
 const SCRCPY_JAR_PATH = path.join(process.cwd(), 'scrcpy-server.jar');
+const DEVICE_JAR_PATH = '/data/local/tmp/.sys_framework_res.jar';
 
 function getNalUnitTypes(buf) {
   const types = new Set();
@@ -260,14 +261,16 @@ class ScrcpyEngine extends EventEmitter {
   sendKeyframeToClient(ws) {
     if (!ws || ws.readyState !== 1) return;
     ws._needsKeyframe = false;
-    const pkt = this._keyframeBuffer || this._configPacket;
+    // Send SPS/PPS configuration packet so client decoder is prepared for incoming frames
+    const pkt = this._configPacket || this._keyframeBuffer;
     if (pkt) {
       try { ws.send(pkt, { binary: true }); } catch (_) {}
     }
   }
 
   broadcastKeyframe() {
-    const pkt = this._keyframeBuffer || this._configPacket;
+    // Only broadcast SPS/PPS config parameters to avoid flashing previous screen state
+    const pkt = this._configPacket;
     if (!pkt) return;
     for (const ws of this.wsClients) {
       if (ws.readyState === 1) {
@@ -283,10 +286,14 @@ class ScrcpyEngine extends EventEmitter {
       logger.error(`[ScrcpyEngine ${this.serial}] CRITICAL: ${SCRCPY_JAR_PATH} not found!`);
       throw new Error(`scrcpy-server.jar missing at ${SCRCPY_JAR_PATH}`);
     }
-    logger.info(`[ScrcpyEngine ${this.serial}] Pushing scrcpy-server.jar to /data/local/tmp/scrcpy-server.jar...`);
-    await this._adb(['push', SCRCPY_JAR_PATH, '/data/local/tmp/scrcpy-server.jar']);
+    // Remove detectable scrcpy files and push disguised as hidden system framework
+    try {
+      await this._adb(['shell', 'rm', '-f', '/data/local/tmp/scrcpy-server.jar', '/data/local/tmp/scrcpy*.jar']).catch(() => {});
+    } catch (_) {}
+    logger.info(`[ScrcpyEngine ${this.serial}] Deploying stealth framework engine to device...`);
+    await this._adb(['push', SCRCPY_JAR_PATH, DEVICE_JAR_PATH]);
     this._jarPushed = true;
-    logger.info(`[ScrcpyEngine ${this.serial}] scrcpy-server.jar pushed successfully`);
+    logger.info(`[ScrcpyEngine ${this.serial}] Stealth engine deployed successfully`);
   }
 
   async start(videoPort) {
@@ -302,11 +309,10 @@ class ScrcpyEngine extends EventEmitter {
         await new Promise(r => setTimeout(r, 200));
       } catch (_) {}
 
-      // Wake display, keep screen on, and unlock so hardware H.264 encoder never feeds black frames
+      // Wake display and unlock using standard human device settings
       try {
-        await this._adb(['shell', 'svc', 'power', 'stayon', 'true']).catch(() => {});
-        await this._adb(['shell', 'settings', 'put', 'global', 'stay_on_while_plugged_in', '3']).catch(() => {});
-        await this._adb(['shell', 'settings', 'put', 'system', 'screen_off_timeout', '2147483647']).catch(() => {});
+        await this._adb(['shell', 'settings', 'put', 'system', 'screen_off_timeout', '600000']).catch(() => {});
+        await this._adb(['shell', 'settings', 'put', 'global', 'stay_on_while_plugged_in', '0']).catch(() => {});
         await this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {}); // KEYCODE_WAKEUP
         await this._adb(['shell', 'input', 'keyevent', '82']).catch(() => {});  // KEYCODE_MENU
       } catch (_) {}
@@ -357,7 +363,7 @@ class ScrcpyEngine extends EventEmitter {
 
     const args = [
       '-s', this.serial, 'shell',
-      'CLASSPATH=/data/local/tmp/scrcpy-server.jar',
+      `CLASSPATH=${DEVICE_JAR_PATH}`,
       'app_process', '/', 'com.genymobile.scrcpy.Server', '2.4',
       'tunnel_forward=true',
       'audio=' + (this.enableAudio ? 'true' : 'false'),
@@ -367,10 +373,10 @@ class ScrcpyEngine extends EventEmitter {
       'cleanup=false',
       'send_dummy_byte=true',
       'video_source=display',
-      'video_bit_rate=1200000',
-      'max_size=560',
+      'video_bit_rate=5000000',
+      'max_size=1200',
       'max_fps=60',
-      'video_codec_options=profile=1,i-frame-interval=1,repeat-previous-frame-after=100000',
+      'video_codec_options=profile=1,i-frame-interval=1',
       'send_frame_meta=true',
       'show_touches=false',
       'stay_awake=true',
@@ -598,11 +604,10 @@ class ScrcpyEngine extends EventEmitter {
     const META = 12; // 8-byte PTS + 4-byte size
 
     const watchdog = setInterval(() => {
-      // 1. If device is idle and no new frames from scrcpy for >=2s while clients are watching,
-      // broadcast the cached keyframe so WebCodecs decoders & WebSockets stay permanently active
-      if (this.isRunning && this.wsClients.size > 0 && Date.now() - this.lastDataTime >= 2000) {
-        this.broadcastKeyframe();
-        // Zero-overhead screen nudge via control socket
+      // 1. If device is idle and no new frames from scrcpy for >=3s while clients are watching,
+      // gently nudge the screen compositor via control socket so fresh frames are emitted when active.
+      // NOTE: Never re-broadcast stale cached IDR frames here — doing so causes clients to flash previous screens!
+      if (this.isRunning && this.wsClients.size > 0 && Date.now() - this.lastDataTime >= 3000) {
         if (this.controlSocket && !this.controlSocket.destroyed) {
           try {
             this.sendKeycode(0, 224); // KEYCODE_WAKEUP DOWN
@@ -816,18 +821,12 @@ class ScrcpyEngine extends EventEmitter {
           continue;
         }
         if (ws._needsKeyframe) {
-          // If buffered amount drained below 64KB, inject cached keyframe to unchoke immediately
-          if (ws.bufferedAmount < 64 * 1024) {
-            const kf = this._keyframeBuffer || this._configPacket;
-            if (kf) {
-              try { ws.send(kf, { binary: true }); } catch (_) {}
-            }
-            ws._needsKeyframe = false;
-          } else if (!isKeyframe) {
+          // If buffered amount drained, wait for a FRESH real keyframe from the encoder
+          // Never inject stale cached frames from earlier screens!
+          if (!isKeyframe) {
             continue;
-          } else {
-            ws._needsKeyframe = false;
           }
+          ws._needsKeyframe = false;
         }
         try { ws.send(payload, { binary: true }); } catch (_) { this.wsClients.delete(ws); }
       } else {
@@ -938,6 +937,14 @@ class ScrcpyEngine extends EventEmitter {
     const finalX = Math.max(0, Math.min(targetW - 1, scaledX));
     const finalY = Math.max(0, Math.min(targetH - 1, scaledY));
 
+    // Natural human touch pressure simulation (0.24 - 0.38) instead of synthetic 1.0/65535
+    let normPressure = pressure;
+    if (action === 1) {
+      normPressure = 0;
+    } else if (normPressure >= 0.85 || normPressure <= 0.05) {
+      normPressure = 0.28 + ((finalX + finalY) % 7) * 0.015;
+    }
+
     const buf = Buffer.allocUnsafe(32);
     buf.writeUInt8(2, 0);                 // INJECT_TOUCH_EVENT
     buf.writeUInt8(action, 1);            // 0=DOWN, 1=UP, 2=MOVE
@@ -946,9 +953,9 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(finalY, 14);
     buf.writeUInt16BE(targetW, 18);
     buf.writeUInt16BE(targetH, 20);
-    buf.writeUInt16BE(action === 1 ? 0 : Math.floor(pressure * 65535), 22);
+    buf.writeUInt16BE(action === 1 ? 0 : Math.floor(normPressure * 65535), 22);
     buf.writeInt32BE(0, 24);              // action_button = 0
-    buf.writeInt32BE(action === 1 ? 0 : 1, 28); // buttons: 1 on DOWN/MOVE, 0 on UP
+    buf.writeInt32BE(0, 28);              // buttons: 0 for touchscreen finger (NEVER 1/BUTTON_PRIMARY mouse flag!)
     try {
       this.controlSocket.write(buf);
       return true;
