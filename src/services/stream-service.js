@@ -228,16 +228,19 @@ function handleControl(type, data, serial, engine) {
 
 // ─── Server-Side Realtime Device Credential Verification (Redis-backed) ──────
 
-async function verifyDeviceAccess(serial, inputCredential) {
+async function verifyDeviceAccess(serial, inputCredential, isCctvView = false) {
   if (!serial) return false;
   const input = (inputCredential || '').trim();
 
-  // If no input credential provided (internal CCTV feed or admin monitor), allow
-  if (!input) return true;
+  // If loading inside CCTV Wall tile (read-only monitoring grid), allow video feed display
+  if (isCctvView) return true;
+
+  // Direct open stream access strictly requires a valid credential (Seed Admin Key or Assigned Worker PIN)
+  if (!input) return false;
 
   // Local dashboard / owner bypass: binding code or active dashboard session token
   const cfg = loadConfig();
-  if (input === cfg.bindingCode || input === '20741881' || input === cfg.sessionToken) return true;
+  if (input === cfg.bindingCode || input === cfg.sessionToken) return true;
   try {
     const dash = require('../dashboard/server');
     if (dash && dash.SESSION_TOKENS && dash.SESSION_TOKENS.has(input)) return true;
@@ -261,32 +264,31 @@ async function verifyDeviceAccess(serial, inputCredential) {
   // 2. Cache miss — query Supabase for active credentials
   const supaUrl = cfg.supabaseUrl;
   const supaKey = cfg.supabaseServiceRoleKey || cfg.supabaseAnonKey;
-  if (!supaUrl || !supaKey) return true;
+  if (!supaUrl || !supaKey) return false;
 
   try {
-    const res = await fetch(`${supaUrl.replace(/\/$/, '')}/rest/v1/devices?serial=eq.${encodeURIComponent(serial)}&select=id,status,stream_url`, {
+    const res = await fetch(`${supaUrl.replace(/\/$/, '')}/rest/v1/devices?serial=eq.${encodeURIComponent(serial)}&select=id,status,stream_url,is_seed_admin_only`, {
       headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` }
     });
-    if (!res.ok) return true;
+    if (!res.ok) return false;
     const devices = await res.json();
-    if (!Array.isArray(devices) || devices.length === 0) return true;
+    if (!Array.isArray(devices) || devices.length === 0) return false;
 
     const dev = devices[0];
     const devStatus = dev.status || 'online';
+    if (devStatus === 'suspended' || devStatus === 'blocked' || devStatus === 'revoked') return false;
 
     const validKeys = [];
     const validPins = [];
 
-    // Parse active master credentials from devices.stream_url
+    // Parse active Seed Admin master credentials from devices.stream_url
     const currentStreamUrl = dev.stream_url || '';
     const matchKey   = currentStreamUrl.match(/[?&]key=([^&]+)/i);
-    const matchPin   = currentStreamUrl.match(/[?&]pin=([^&]+)/i);
     const matchToken = currentStreamUrl.match(/[?&]token=([^&]+)/i);
     if (matchKey)   validKeys.push(decodeURIComponent(matchKey[1]).trim());
-    if (matchPin)   validPins.push(decodeURIComponent(matchPin[1]).trim());
     if (matchToken) validKeys.push(decodeURIComponent(matchToken[1]).trim());
 
-    // Parse active worker credentials from device_assignments
+    // Parse active worker credentials from device_assignments (assigned user PINs ONLY)
     if (dev.id) {
       try {
         const aRes = await fetch(`${supaUrl.replace(/\/$/, '')}/rest/v1/device_assignments?device_id=eq.${encodeURIComponent(dev.id)}&select=access_password`, {
@@ -308,16 +310,15 @@ async function verifyDeviceAccess(serial, inputCredential) {
       await cache.set(cacheKey, { validKeys, validPins, status: devStatus }, cache.TTL.CREDENTIALS);
     } catch (_) {}
 
-    if (devStatus === 'suspended' || devStatus === 'blocked' || devStatus === 'revoked') return false;
     if (validPins.includes(input) || validKeys.includes(input)) return true;
     for (const k of validKeys) { if (k.toLowerCase() === input.toLowerCase()) return true; }
     for (const p of validPins) { if (p === input) return true; }
 
-    // If credential was provided but is neither the active master key nor an active assignment -> DENIED
+    // Neither Seed Admin master key nor active assignment PIN -> DENIED
     return false;
   } catch (err) {
-    logger.warn(`[StreamService] Credential validation warning for ${serial}: ${err.message}`);
-    return true;
+    logger.warn(`[StreamService] Credential validation error for ${serial}: ${err.message}`);
+    return false;
   }
 }
 
@@ -2093,6 +2094,7 @@ async function startStreamServer(serial, port, aliasSerial) {
     const p   = url.pathname;
     const reqUdid = (url.searchParams.get('udid') || '').trim();
     const candidateAuth = (url.searchParams.get('pin') || url.searchParams.get('key') || url.searchParams.get('token') || '').trim();
+    const isCctvView = url.searchParams.get('cctv') === '1' || url.searchParams.get('view') === 'cctv';
 
     // 1. Bare domain or no UDID provided -> show the 5 auto-sliding cards presentation
     if (!reqUdid) {
@@ -2112,15 +2114,15 @@ async function startStreamServer(serial, port, aliasSerial) {
     const effectiveSerial = targetSession.serial || serial;
     const effectiveEngine = targetSession.engine || engine;
 
-    // 3. Server-side token / PIN verification
-    const isAuthorized = await verifyDeviceAccess(effectiveSerial, candidateAuth);
+    // 3. Server-side token / PIN verification (Seed Admin Key or Assigned Worker PIN required)
+    const isAuthorized = await verifyDeviceAccess(effectiveSerial, candidateAuth, isCctvView);
     if (!isAuthorized) {
       res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(buildVertexCardsHtml(
         effectiveSerial,
         candidateAuth,
         true,
-        `Access denied for ${effectiveSerial}. Valid server-confirmed PIN or access token required. If an administrator has reset your credentials, please enter the updated PIN.`
+        `Access Denied for ${effectiveSerial}. Direct stream control is strictly restricted to Seed Admin or the specific user assigned to this device. Admins and Super Admins must view devices via the CCTV Wall.`
       ));
       return;
     }
@@ -2173,6 +2175,7 @@ async function startStreamServer(serial, port, aliasSerial) {
     const wsUrl = new URL(req.url, 'http://localhost');
     const reqWsUdid = (wsUrl.searchParams.get('udid') || '').trim();
     const candidateWsAuth = (wsUrl.searchParams.get('pin') || wsUrl.searchParams.get('key') || wsUrl.searchParams.get('token') || '').trim();
+    const isWsCctv = wsUrl.searchParams.get('cctv') === '1' || wsUrl.searchParams.get('view') === 'cctv';
 
     if (!reqWsUdid) {
       ws.close(4000, 'Device UDID Required');
@@ -2188,12 +2191,12 @@ async function startStreamServer(serial, port, aliasSerial) {
     const effectiveWsSerial = targetWsSession.serial || serial;
     const effectiveWsEngine = targetWsSession.engine || engine;
 
-    // Check credential on initial WS connection
-    const isWsAuthorized = await verifyDeviceAccess(effectiveWsSerial, candidateWsAuth);
+    // Check credential on initial WS connection (Seed Admin Key or Assigned Worker PIN required)
+    const isWsAuthorized = await verifyDeviceAccess(effectiveWsSerial, candidateWsAuth, isWsCctv);
     if (!isWsAuthorized) {
       logger.warn(`[StreamServer] Unauthorized WS connection attempt for ${effectiveWsSerial}`);
       try {
-        ws.send(JSON.stringify({ type: 'stream_revoked', reason: 'Invalid or reset credentials' }));
+        ws.send(JSON.stringify({ type: 'stream_revoked', reason: 'Direct stream restricted to Seed Admin or assigned user only' }));
       } catch (_) {}
       ws.close(4003, 'Unauthorized / Expired Credentials');
       return;
@@ -2202,13 +2205,13 @@ async function startStreamServer(serial, port, aliasSerial) {
     logger.info(`[StreamServer] WS connected and authorized for ${effectiveWsSerial}`);
     effectiveWsEngine.addClient(ws);
 
-    // Heartbeat verification every 10 seconds: if admin resets PIN/key, revoke stream
+    // Heartbeat verification every 10 seconds: if admin resets PIN/key or unallocates, revoke stream
     const authWatcherTimer = setInterval(async () => {
-      const stillAuthorized = await verifyDeviceAccess(effectiveWsSerial, candidateWsAuth);
+      const stillAuthorized = await verifyDeviceAccess(effectiveWsSerial, candidateWsAuth, isWsCctv);
       if (!stillAuthorized) {
         logger.warn(`[StreamServer] Credentials revoked by admin for ${effectiveWsSerial}. Terminating active stream.`);
         try {
-          ws.send(JSON.stringify({ type: 'stream_revoked', reason: 'Credentials reset by admin' }));
+          ws.send(JSON.stringify({ type: 'stream_revoked', reason: 'Stream authorization revoked or reassigned' }));
         } catch (_) {}
         clearInterval(authWatcherTimer);
         effectiveWsEngine.removeClient(ws);

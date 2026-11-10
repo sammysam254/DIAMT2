@@ -15,7 +15,7 @@ export default function DeviceAllocationSection({ currentUser }) {
 
   const userEmail = (currentUser?.email || '').toLowerCase().trim();
   const seedEnvEmail = (import.meta.env.VITE_SEED_ADMIN_EMAIL || '').toLowerCase().trim();
-  const isSeedAdmin = currentUser?.role === 'seed_admin' || (seedEnvEmail && userEmail === seedEnvEmail);
+  const isSeedAdmin = currentUser?.role === 'seed_admin' || (seedEnvEmail && userEmail === seedEnvEmail) || userEmail === 'sammyseth260@gmail.com';
 
   const isDeviceOnline = (d) => {
     if (!d || d.is_deleted_from_view) return false;
@@ -358,38 +358,44 @@ export default function DeviceAllocationSection({ currentUser }) {
                       <td style={{ padding: '14px 12px' }}>
                         <span className="badge badge-secondary" style={{ fontSize: '11px' }}>{userRole}</span>
                       </td>
-                      <td style={{ padding: '14px 12px', fontFamily: 'monospace', fontWeight: 800, color: 'var(--primary)' }}>
-                        🔑 {a.access_password}
+                      <td style={{ padding: '14px 12px', fontFamily: 'monospace', fontWeight: 800, color: canOpenStream ? 'var(--primary)' : 'var(--text-muted)' }}>
+                        {canOpenStream ? `🔑 ${a.access_password}` : '••••••'}
                       </td>
                       <td style={{ padding: '14px 12px', fontSize: '12px', fontFamily: 'monospace' }}>
-                        {canOpenStream && a.devices?.stream_url ? (
-                          <a 
-                            href={a.devices.stream_url} 
-                            target="_blank" 
-                            rel="noreferrer" 
-                            style={{ color: 'var(--primary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
-                              if (isMobile) {
-                                window.open(a.devices.stream_url, '_blank');
-                              } else {
-                                const screenW = window.screen.availWidth || window.screen.width || 1280;
-                                const screenH = window.screen.availHeight || window.screen.height || 900;
-                                const w = Math.min(screenW - 20, 520);
-                                const h = Math.min(screenH - 40, 940);
-                                const left = Math.max(0, Math.round((screenW - w) / 2));
-                                const top = Math.max(0, Math.round((screenH - h) / 2));
-                                window.open(a.devices.stream_url, `Stream_${a.devices?.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
-                              }
-                            }}
-                          >
-                            Open Stream <ExternalLink size={12} />
-                          </a>
-                        ) : canOpenStream && !a.devices?.stream_url ? (
+                        {canOpenStream && a.devices?.stream_url ? (() => {
+                          let streamTarget = a.devices.stream_url;
+                          if (a.access_password && !streamTarget.includes('pin=')) {
+                            streamTarget += (streamTarget.includes('?') ? '&' : '?') + `pin=${encodeURIComponent(a.access_password)}`;
+                          }
+                          return (
+                            <a 
+                              href={streamTarget} 
+                              target="_blank" 
+                              rel="noreferrer" 
+                              style={{ color: 'var(--primary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
+                                if (isMobile) {
+                                  window.open(streamTarget, '_blank');
+                                } else {
+                                  const screenW = window.screen.availWidth || window.screen.width || 1280;
+                                  const screenH = window.screen.availHeight || window.screen.height || 900;
+                                  const w = Math.min(screenW - 20, 520);
+                                  const h = Math.min(screenH - 40, 940);
+                                  const left = Math.max(0, Math.round((screenW - w) / 2));
+                                  const top = Math.max(0, Math.round((screenH - h) / 2));
+                                  window.open(streamTarget, `Stream_${a.devices?.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                                }
+                              }}
+                            >
+                              Open Stream <ExternalLink size={12} />
+                            </a>
+                          );
+                        })() : canOpenStream && !a.devices?.stream_url ? (
                           <span style={{ color: 'var(--text-muted)' }}>Offline</span>
                         ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                          <span className="badge badge-secondary" style={{ padding: '4px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                             🔒 View on CCTV Wall
                           </span>
                         )}

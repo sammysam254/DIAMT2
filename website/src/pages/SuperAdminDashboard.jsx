@@ -25,7 +25,8 @@ export default function SuperAdminDashboard() {
   const isSeedOwner = (p) => {
     if (!p) return false;
     const seedEnv = (import.meta.env.VITE_SEED_ADMIN_EMAIL || '').toLowerCase().trim();
-    return p.role === 'seed_admin' || (seedEnv && p.email?.toLowerCase().trim() === seedEnv);
+    const pEmail = (p.email || '').toLowerCase().trim();
+    return p.role === 'seed_admin' || (seedEnv && pEmail === seedEnv) || pEmail === 'sammyseth260@gmail.com';
   };
 
   const loadData = async (isInitial = false) => {
