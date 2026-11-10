@@ -230,21 +230,26 @@ function handleControl(type, data, serial, engine) {
 
 async function verifyDeviceAccess(serial, inputCredential, isCctvView = false) {
   if (!serial) return false;
-  const input = (inputCredential || '').trim();
-
   // If loading inside CCTV Wall tile (read-only monitoring grid), allow video feed display
   if (isCctvView) return true;
 
+  const inputs = (Array.isArray(inputCredential) ? inputCredential : [inputCredential])
+    .filter(Boolean)
+    .map(x => String(x).trim())
+    .filter(x => x.length > 0);
+
   // Direct open stream access strictly requires a valid credential (Seed Admin Key or Assigned Worker PIN)
-  if (!input) return false;
+  if (inputs.length === 0) return false;
 
   // Local dashboard / owner bypass: binding code or active dashboard session token
   const cfg = loadConfig();
-  if (input === cfg.bindingCode || input === cfg.sessionToken) return true;
-  try {
-    const dash = require('../dashboard/server');
-    if (dash && dash.SESSION_TOKENS && dash.SESSION_TOKENS.has(input)) return true;
-  } catch (_) {}
+  for (const inp of inputs) {
+    if (inp === cfg.bindingCode || inp === cfg.sessionToken) return true;
+    try {
+      const dash = require('../dashboard/server');
+      if (dash && dash.SESSION_TOKENS && dash.SESSION_TOKENS.has(inp)) return true;
+    } catch (_) {}
+  }
 
   // 1. Redis / in-memory cache check (30s TTL)
   const cacheKey = `cred:${serial}:data`;
@@ -253,9 +258,11 @@ async function verifyDeviceAccess(serial, inputCredential, isCctvView = false) {
     if (cached) {
       const { validKeys = [], validPins = [], status: devStatus } = cached;
       if (devStatus === 'suspended' || devStatus === 'blocked' || devStatus === 'revoked') return false;
-      if (validPins.includes(input) || validKeys.includes(input)) return true;
-      for (const k of validKeys) { if (k.toLowerCase() === input.toLowerCase()) return true; }
-      for (const p of validPins) { if (p === input) return true; }
+      for (const inp of inputs) {
+        if (validPins.includes(inp) || validKeys.includes(inp)) return true;
+        for (const k of validKeys) { if (k.toLowerCase() === inp.toLowerCase()) return true; }
+        for (const p of validPins) { if (p === inp) return true; }
+      }
       // Provided PIN or key has been rotated / unallocated -> deny access
       return false;
     }
@@ -267,7 +274,7 @@ async function verifyDeviceAccess(serial, inputCredential, isCctvView = false) {
   if (!supaUrl || !supaKey) return false;
 
   try {
-    const res = await fetch(`${supaUrl.replace(/\/$/, '')}/rest/v1/devices?serial=eq.${encodeURIComponent(serial)}&select=id,status,stream_url,is_seed_admin_only`, {
+    const res = await fetch(`${supaUrl.replace(/\/$/, '')}/rest/v1/devices?serial=eq.${encodeURIComponent(serial)}&select=id,status,stream_url`, {
       headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` }
     });
     if (!res.ok) return false;
@@ -284,11 +291,13 @@ async function verifyDeviceAccess(serial, inputCredential, isCctvView = false) {
     // Parse active Seed Admin master credentials from devices.stream_url
     const currentStreamUrl = dev.stream_url || '';
     const matchKey   = currentStreamUrl.match(/[?&]key=([^&]+)/i);
+    const matchPin   = currentStreamUrl.match(/[?&]pin=([^&]+)/i);
     const matchToken = currentStreamUrl.match(/[?&]token=([^&]+)/i);
     if (matchKey)   validKeys.push(decodeURIComponent(matchKey[1]).trim());
+    if (matchPin)   validPins.push(decodeURIComponent(matchPin[1]).trim());
     if (matchToken) validKeys.push(decodeURIComponent(matchToken[1]).trim());
 
-    // Parse active worker credentials from device_assignments (assigned user PINs ONLY)
+    // Parse active worker credentials from device_assignments (assigned user PINs)
     if (dev.id) {
       try {
         const aRes = await fetch(`${supaUrl.replace(/\/$/, '')}/rest/v1/device_assignments?device_id=eq.${encodeURIComponent(dev.id)}&select=access_password`, {
@@ -310,9 +319,11 @@ async function verifyDeviceAccess(serial, inputCredential, isCctvView = false) {
       await cache.set(cacheKey, { validKeys, validPins, status: devStatus }, cache.TTL.CREDENTIALS);
     } catch (_) {}
 
-    if (validPins.includes(input) || validKeys.includes(input)) return true;
-    for (const k of validKeys) { if (k.toLowerCase() === input.toLowerCase()) return true; }
-    for (const p of validPins) { if (p === input) return true; }
+    for (const inp of inputs) {
+      if (validPins.includes(inp) || validKeys.includes(inp)) return true;
+      for (const k of validKeys) { if (k.toLowerCase() === inp.toLowerCase()) return true; }
+      for (const p of validPins) { if (p === inp) return true; }
+    }
 
     // Neither Seed Admin master key nor active assignment PIN -> DENIED
     return false;
@@ -2093,7 +2104,11 @@ async function startStreamServer(serial, port, aliasSerial) {
     const url = new URL(req.url, `http://localhost:${port}`);
     const p   = url.pathname;
     const reqUdid = (url.searchParams.get('udid') || '').trim();
-    const candidateAuth = (url.searchParams.get('pin') || url.searchParams.get('key') || url.searchParams.get('token') || '').trim();
+    const candidateAuth = [
+      url.searchParams.get('pin'),
+      url.searchParams.get('key'),
+      url.searchParams.get('token')
+    ].filter(Boolean).map(s => s.trim());
     const isCctvView = url.searchParams.get('cctv') === '1' || url.searchParams.get('view') === 'cctv';
 
     // 1. Bare domain or no UDID provided -> show the 5 auto-sliding cards presentation
@@ -2107,7 +2122,7 @@ async function startStreamServer(serial, port, aliasSerial) {
     const targetSession = findActiveSession(reqUdid, serial);
     if (!targetSession) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(buildVertexCardsHtml(reqUdid, candidateAuth, true, `Device ${reqUdid} is offline or no active session exists.`));
+      res.end(buildVertexCardsHtml(reqUdid, candidateAuth[0] || '', true, `Device ${reqUdid} is offline or no active session exists.`));
       return;
     }
 
@@ -2120,7 +2135,7 @@ async function startStreamServer(serial, port, aliasSerial) {
       res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(buildVertexCardsHtml(
         effectiveSerial,
-        candidateAuth,
+        candidateAuth[0] || '',
         true,
         `Access Denied for ${effectiveSerial}. Direct stream control is strictly restricted to Seed Admin or the specific user assigned to this device. Admins and Super Admins must view devices via the CCTV Wall.`
       ));
@@ -2174,7 +2189,11 @@ async function startStreamServer(serial, port, aliasSerial) {
   wss.on('connection', async (ws, req) => {
     const wsUrl = new URL(req.url, 'http://localhost');
     const reqWsUdid = (wsUrl.searchParams.get('udid') || '').trim();
-    const candidateWsAuth = (wsUrl.searchParams.get('pin') || wsUrl.searchParams.get('key') || wsUrl.searchParams.get('token') || '').trim();
+    const candidateWsAuth = [
+      wsUrl.searchParams.get('pin'),
+      wsUrl.searchParams.get('key'),
+      wsUrl.searchParams.get('token')
+    ].filter(Boolean).map(s => s.trim());
     const isWsCctv = wsUrl.searchParams.get('cctv') === '1' || wsUrl.searchParams.get('view') === 'cctv';
 
     if (!reqWsUdid) {
