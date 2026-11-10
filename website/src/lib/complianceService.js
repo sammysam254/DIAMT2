@@ -36,18 +36,70 @@ export function calculateWorkerCompliance(worker, workerWeekClaims = []) {
 }
 
 /**
- * Checks if a worker is exempt from suspensions (e.g. Admins, Seed Admins)
+ * Checks if a worker is considered a new user / new worker.
+ * Rules:
+ * 1. An account created less than 7 days ago.
+ * 2. An account created in the current ISO week cycle.
+ * 3. An account created on or after the start date of the audited week (or during/after auditWeek).
+ * 4. Missing created_at timestamp defaults to safe (treated as exempt/new to prevent accidental auto-suspension).
  */
-export function isExemptFromSuspension(worker) {
+export function isNewWorker(worker, auditWeek = null) {
+  if (!worker) return false;
+  if (!worker.created_at) return true; // Safety default: missing creation date should never be falsely auto-suspended
+
+  const createdAt = new Date(worker.created_at).getTime();
+  if (isNaN(createdAt)) return true;
+
+  const now = Date.now();
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+  // Rule 1: Account created within the last 7 days
+  if (now - createdAt < SEVEN_DAYS_MS) {
+    return true;
+  }
+
+  // Rule 2: Account created during the current active ISO week
+  const currentWeek = getISOWeekString(new Date(now));
+  const createdWeek = getISOWeekString(new Date(createdAt));
+  if (createdWeek === currentWeek) {
+    return true;
+  }
+
+  // Rule 3: If an audit week is being evaluated, accounts created during or after that audit week are new to that cycle
+  if (auditWeek && createdWeek >= auditWeek) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Checks if current time is Sunday at 23:59 (the weekly cutoff window).
+ * Rule: Auto-suspensions may ONLY occur at 23:59 of Sunday, never on any other day of the week.
+ */
+export function isSundayCutoffTime(d = new Date()) {
+  const day = d.getDay(); // 0 is Sunday
+  const hours = d.getHours();
+  const minutes = d.getMinutes();
+
+  // Sunday at 23:55 - 23:59 (5-minute cutoff window before midnight transition)
+  return day === 0 && hours === 23 && minutes >= 55;
+}
+
+/**
+ * Checks if a worker is exempt from suspensions (e.g. Admins, Seed Admins, New Workers)
+ */
+export function isExemptFromSuspension(worker, auditWeek = null) {
   if (!worker) return true;
   if (['admin', 'super_admin', 'seed_admin'].includes(worker.role)) return true;
   if (import.meta.env.VITE_SEED_ADMIN_EMAIL && (worker.email || '').toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase()) return true;
+  if (isNewWorker(worker, auditWeek)) return true;
   return false;
 }
 
 /**
  * Executes a full compliance audit for a given week identifier.
- * Evaluates ALL workers (both Weekly $40 Plan and Daily $10 Plan).
+ * Evaluates ALL eligible non-exempt workers (new workers are strictly protected).
  * A worker is compliant if their valid claims total >= $40.00.
  */
 export async function executeWeeklyComplianceAudit(auditWeek, { enforce = true, supabaseClient = supabase } = {}) {
@@ -69,7 +121,9 @@ export async function executeWeeklyComplianceAudit(auditWeek, { enforce = true, 
 
   if (cErr) throw cErr;
 
-  const allWorkers = (profiles || []).filter(p => p.role === 'worker' && !isExemptFromSuspension(p));
+  const rawWorkers = (profiles || []).filter(p => p.role === 'worker');
+  const allWorkers = rawWorkers.filter(p => !isExemptFromSuspension(p, auditWeek));
+  const newWorkersSkipped = rawWorkers.filter(p => isNewWorker(p, auditWeek));
   const weekClaims = claims || [];
 
   const defaultingWorkers = [];
@@ -140,22 +194,34 @@ export async function executeWeeklyComplianceAudit(auditWeek, { enforce = true, 
   return {
     auditWeek,
     totalEvaluated: allWorkers.length,
+    newWorkersProtectedCount: newWorkersSkipped.length,
     defaultingCount: defaultingWorkers.length,
     compliantCount: compliantWorkers.length,
     suspendedCount: suspendedWorkers.length,
     defaultingWorkers,
     compliantWorkers,
-    alreadyBlockedOrSuspended
+    alreadyBlockedOrSuspended,
+    newWorkersSkipped
   };
 }
 
 /**
  * Automated runtime check:
- * Runs when users interact with the app. If the previous week ended (past Sunday 23:59),
- * automatically sweeps and enforces auto-suspensions for the concluded week cycle.
+ * STRICT PLATFORM RULE: Auto-suspensions may ONLY occur at 23:59 of Sunday, never on any other day of the week.
+ * Furthermore, NEW WORKERS are strictly protected and NEVER auto-suspended.
  */
 export async function autoCheckAndEnforcePastWeekAudit(currentProfile) {
   if (!currentProfile) return null;
+
+  // STRICT TIMING GUARD: Auto-suspension can ONLY execute at 23:59 of Sunday, NOT any other day of the week!
+  if (!isSundayCutoffTime()) {
+    return null;
+  }
+
+  // STRICT NEW WORKER GUARD: New workers are NEVER auto-suspended
+  if (isNewWorker(currentProfile)) {
+    return null;
+  }
 
   const previousWeek = getPreviousISOWeekString();
   const currentWeek = getISOWeekString();
@@ -163,9 +229,8 @@ export async function autoCheckAndEnforcePastWeekAudit(currentProfile) {
   // If previousWeek is the same as currentWeek, no past week to audit yet
   if (previousWeek === currentWeek) return null;
 
-  // Case 1: Individual worker login enforcement
-  // If the logged-in user is a worker, verify their compliance for the completed week
-  if (currentProfile.role === 'worker' && !isExemptFromSuspension(currentProfile)) {
+  // Case 1: Individual worker login enforcement on Sunday 23:59 cutoff
+  if (currentProfile.role === 'worker' && !isExemptFromSuspension(currentProfile, previousWeek)) {
     if (!currentProfile.is_auto_suspended && !currentProfile.is_blocked) {
       try {
         const { data: prevClaims } = await supabase
@@ -176,7 +241,7 @@ export async function autoCheckAndEnforcePastWeekAudit(currentProfile) {
 
         const metrics = calculateWorkerCompliance(currentProfile, prevClaims || []);
         if (!metrics.isCompliant) {
-          // Worker failed previous week target! Enforce immediate auto-suspension!
+          // Worker failed previous week target!
           const blockedReason = `Due to failing to achieve weekly target rule as per your subscribed plan (Submitted $${metrics.totalValidAmount.toFixed(2)} of $40.00 required for week ${previousWeek}), the system has auto-suspended you and you are required to leave the station before tomorrow at 8 AM, as your services are no longer needed.`;
           
           await supabase
@@ -198,15 +263,14 @@ export async function autoCheckAndEnforcePastWeekAudit(currentProfile) {
     return null;
   }
 
-  // Case 2: Admin / Seed Admin login enforcement
-  // Automatically audit the concluded week in the background if not done recently
+  // Case 2: Admin / Seed Admin login enforcement on Sunday 23:59 cutoff
   const isAdmin = ['admin', 'super_admin', 'seed_admin'].includes(currentProfile.role) ||
                   (import.meta.env.VITE_SEED_ADMIN_EMAIL && currentProfile.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
 
   if (isAdmin) {
     const lockKey = `diamt_audit_last_enforced_${previousWeek}`;
     const lastRun = localStorage.getItem(lockKey);
-    // Re-check once every 30 minutes or on initial load
+    // Ensure audit runs only once during the Sunday 23:59 cutoff window
     if (lastRun && Date.now() - parseInt(lastRun, 10) < 30 * 60 * 1000) {
       return null;
     }

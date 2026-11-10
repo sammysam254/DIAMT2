@@ -2,13 +2,14 @@ import React, { useEffect, useState } from 'react';
 import DashboardLayout from '../layouts/DashboardLayout';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Users, RefreshCw, UserX, UserCheck } from 'lucide-react';
+import { Users, RefreshCw, UserX, UserCheck, Smartphone, ExternalLink, Lock } from 'lucide-react';
 import CctvWall from '../components/CctvWall';
 import DeviceAllocationSection from '../components/DeviceAllocationSection';
 
 export default function AdminDashboard() {
   const { profile } = useAuth();
   const [workers, setWorkers] = useState([]);
+  const [myAssignments, setMyAssignments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [blockingId, setBlockingId] = useState(null);
   const [blockReasonModal, setBlockReasonModal] = useState(null);
@@ -17,6 +18,16 @@ export default function AdminDashboard() {
   const loadData = async (isInitial = false) => {
     if (isInitial) setLoading(true);
     try {
+      // Fetch devices assigned specifically to this admin
+      if (profile?.id) {
+        const { data: aData } = await supabase
+          .from('device_assignments')
+          .select('*, devices(*)')
+          .eq('assigned_to_user_id', profile.id);
+        const valid = (aData || []).filter(a => a.devices && !a.devices.is_deleted_from_view);
+        setMyAssignments(valid);
+      }
+
       // Fetch workers (workers and admins for management)
       const { data: wData } = await supabase.from('profiles').select('*').eq('role', 'worker').order('email', { ascending: true });
       setWorkers(wData || []);
@@ -132,16 +143,85 @@ export default function AdminDashboard() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Users size={24} color="var(--primary)" />
-            <h1 style={{ fontSize: '24px', fontWeight: 800 }}>Admin Allocation Hub</h1>
+            <h1 style={{ fontSize: '24px', fontWeight: 800 }}>Admin Operations Hub</h1>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: '14px', marginTop: '4px' }}>
-            Assign device stream links to workers and admins with auto-generated passwords for password-protected access.
+            Monitor connected devices via the CCTV Security Wall. Admins can only open device streams directly assigned to their account.
           </p>
         </div>
         <button onClick={loadData} className="btn btn-secondary">
           <RefreshCw size={16} /> Refresh
         </button>
       </div>
+
+      {/* Devices Assigned to this Admin */}
+      {myAssignments.length > 0 && (
+        <div className="card" style={{ marginBottom: '24px', background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.7), rgba(15, 23, 42, 0.9))', borderColor: 'rgba(56, 189, 248, 0.4)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+            <Smartphone size={20} color="var(--primary)" />
+            <h3 style={{ fontSize: '18px', fontWeight: 800, margin: 0 }}>Devices Assigned to You ({myAssignments.length})</h3>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+            {myAssignments.map(a => {
+              const dev = a.devices;
+              const online = dev?.status === 'online' && Boolean(dev?.stream_url);
+              return (
+                <div key={a.id} className="card" style={{ background: 'rgba(15, 23, 42, 0.6)', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ fontSize: '15px', color: '#fff' }}>{dev?.brand || 'Android'} {dev?.model || 'Device'}</strong>
+                    <span className={`badge ${online ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '10px' }}>
+                      {online ? 'ONLINE' : 'OFFLINE'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                    Serial: {dev?.serial}
+                  </div>
+                  <div style={{ fontSize: '12px', background: 'rgba(0,0,0,0.3)', padding: '8px 12px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>PIN:</span>
+                    <strong style={{ color: 'var(--primary)', fontFamily: 'monospace', fontSize: '14px' }}>🔑 {a.access_password}</strong>
+                  </div>
+                  {online ? (
+                    <button
+                      onClick={() => {
+                        let streamUrl = dev.stream_url;
+                        if (streamUrl) {
+                          try {
+                            const u = new URL(streamUrl);
+                            u.searchParams.set('pin', a.access_password.trim());
+                            streamUrl = u.toString();
+                          } catch (_) {
+                            streamUrl += (streamUrl.includes('?') ? '&' : '?') + 'pin=' + encodeURIComponent(a.access_password.trim());
+                          }
+                          const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
+                          if (isMobile) {
+                            window.open(streamUrl, '_blank');
+                          } else {
+                            const screenW = window.screen.availWidth || window.screen.width || 1280;
+                            const screenH = window.screen.availHeight || window.screen.height || 900;
+                            const w = Math.min(screenW - 20, 520);
+                            const h = Math.min(screenH - 40, 940);
+                            const left = Math.max(0, Math.round((screenW - w) / 2));
+                            const top = Math.max(0, Math.round((screenH - h) / 2));
+                            window.open(streamUrl, `Stream_${dev?.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                          }
+                        }
+                      }}
+                      className="btn btn-primary"
+                      style={{ width: '100%', justifyContent: 'center' }}
+                    >
+                      Open Assigned Device <ExternalLink size={14} />
+                    </button>
+                  ) : (
+                    <button disabled className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center', opacity: 0.6 }}>
+                      Device Offline
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Real-time Security CCTV Camera Wall */}
       <CctvWall currentUser={profile} isSuperAdmin={false} />

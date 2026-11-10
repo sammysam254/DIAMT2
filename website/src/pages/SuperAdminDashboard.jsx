@@ -20,11 +20,18 @@ export default function SuperAdminDashboard() {
   const [blockReasonModal, setBlockReasonModal] = useState(null);
   const [blockReason, setBlockReason] = useState('');
   const [logsModalOpen, setLogsModalOpen] = useState(false);
+  const [myAssignedIds, setMyAssignedIds] = useState([]);
+
+  const isSeedOwner = (p) => {
+    if (!p) return false;
+    const seedEnv = (import.meta.env.VITE_SEED_ADMIN_EMAIL || '').toLowerCase().trim();
+    return p.role === 'seed_admin' || (seedEnv && p.email?.toLowerCase().trim() === seedEnv);
+  };
 
   const loadData = async (isInitial = false) => {
     if (isInitial) setLoading(true);
     try {
-      const isSeed = profile?.role === 'seed_admin' || profile?.role === 'super_admin';
+      const isSeed = isSeedOwner(profile);
       let bQuery = supabase.from('machine_bindings').select('*');
       if (!isSeed && profile?.id) {
         bQuery = bQuery.eq('super_admin_id', profile.id);
@@ -32,9 +39,22 @@ export default function SuperAdminDashboard() {
       const { data: bData } = await bQuery;
       setMyBindings(bData || []);
 
+      // Fetch assignments for this super admin account
+      let assignedIds = [];
+      if (profile?.id) {
+        const { data: aData } = await supabase
+          .from('device_assignments')
+          .select('device_id')
+          .eq('assigned_to_user_id', profile.id);
+        assignedIds = (aData || []).map(a => a.device_id);
+        setMyAssignedIds(assignedIds);
+      }
+
       const { data: dData } = await supabase.from('devices').select('*').order('created_at', { ascending: false });
       const visibleDevices = (dData || []).filter(d => {
         if (!isSeed && d.is_deleted_from_view) return false;
+        // Seed Admin View Only restriction
+        if (d.is_seed_admin_only && !isSeed && !assignedIds.includes(d.id)) return false;
         return true;
       });
       setDevices(visibleDevices);
@@ -203,6 +223,35 @@ export default function SuperAdminDashboard() {
     }
   };
 
+  const toggleSeedAdminOnly = async (device) => {
+    const isCurrentSeedOnly = Boolean(device.is_seed_admin_only);
+    const nextState = !isCurrentSeedOnly;
+    const isSeed = isSeedOwner(profile);
+
+    if (isCurrentSeedOnly && !isSeed) {
+      alert('Only Seed Admin can unmark a device from Seed Admin View Only restriction.');
+      return;
+    }
+
+    const confirmMsg = nextState
+      ? `Mark ${device.brand || 'Device'} (${device.serial}) for SEED ADMIN VIEW ONLY?\n\nIt will be hidden from standard views and only available for view & control by Seed Admin (unless assigned).`
+      : `Restore ${device.brand || 'Device'} (${device.serial}) to standard view?`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      await supabase.from('devices').update({
+        is_seed_admin_only: nextState,
+        updated_at: new Date().toISOString()
+      }).eq('id', device.id);
+
+      loadData();
+      alert(`✅ Device view mode updated: ${nextState ? 'SEED ADMIN VIEW ONLY' : 'STANDARD VIEW'}`);
+    } catch (err) {
+      alert('Error updating device view mode: ' + err.message);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
@@ -284,66 +333,95 @@ export default function SuperAdminDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {devices.map(d => (
-                  <tr key={d.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                    <td style={{ padding: '14px 12px', fontWeight: 700 }}>{d.brand} {d.model}</td>
-                    <td style={{ padding: '14px 12px', fontFamily: 'monospace' }}>{d.serial}</td>
-                    <td style={{ padding: '14px 12px', fontFamily: 'monospace', color: 'var(--primary)' }}>{d.binding_code || 'Unbound'}</td>
-                    <td style={{ padding: '14px 12px', fontSize: '12px', fontFamily: 'monospace', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {d.stream_url || 'Generating Cloudflare link...'}
-                    </td>
-                    <td style={{ padding: '14px 12px', textAlign: 'right' }}>
-                      <div style={{ display: 'inline-flex', gap: '8px', alignItems: 'center' }}>
-                        {(profile?.role === 'seed_admin' || (import.meta.env.VITE_SEED_ADMIN_EMAIL && profile?.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase())) && (
+                {devices.map(d => {
+                  const isSeed = isSeedOwner(profile);
+                  const isAssignedToMe = myAssignedIds.includes(d.id);
+                  const canOpen = isSeed || isAssignedToMe;
+
+                  return (
+                    <tr key={d.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                      <td style={{ padding: '14px 12px', fontWeight: 700 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span>{d.brand} {d.model}</span>
+                          {d.is_seed_admin_only && (
+                            <span className="badge badge-warning" style={{ fontSize: '9px', padding: '1px 5px', background: 'rgba(245, 158, 11, 0.25)', color: '#fbbf24' }}>
+                              🔒 SEED ONLY
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td style={{ padding: '14px 12px', fontFamily: 'monospace' }}>{d.serial}</td>
+                      <td style={{ padding: '14px 12px', fontFamily: 'monospace', color: 'var(--primary)' }}>{d.binding_code || 'Unbound'}</td>
+                      <td style={{ padding: '14px 12px', fontSize: '12px', fontFamily: 'monospace', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {canOpen ? (d.stream_url || 'Generating Cloudflare link...') : '•••••••• (CCTV Wall Monitor)'}
+                      </td>
+                      <td style={{ padding: '14px 12px', textAlign: 'right' }}>
+                        <div style={{ display: 'inline-flex', gap: '8px', alignItems: 'center' }}>
+                          {isSeed && (
+                            <button
+                              onClick={() => handleDeleteFromView(d.id)}
+                              className="btn btn-danger"
+                              style={{ padding: '6px 12px', fontSize: '12px' }}
+                              title="Remove device from view across all dashboards"
+                            >
+                              <Trash2 size={12} /> Remove from View
+                            </button>
+                          )}
+                          {isSeed && (
+                            <button
+                              onClick={() => handleRotateStreamLink(d)}
+                              className="btn btn-secondary"
+                              style={{ padding: '6px 12px', fontSize: '12px' }}
+                              title="Rotate stream link and issue a new 16-character access key"
+                            >
+                              <RotateCcw size={12} /> Rotate Link
+                            </button>
+                          )}
                           <button
-                            onClick={() => handleDeleteFromView(d.id)}
-                            className="btn btn-danger"
+                            onClick={() => toggleSeedAdminOnly(d)}
+                            className={`btn ${d.is_seed_admin_only ? 'btn-warning' : 'btn-secondary'}`}
                             style={{ padding: '6px 12px', fontSize: '12px' }}
-                            title="Remove device from view across all dashboards"
+                            title={d.is_seed_admin_only ? 'Marked for Seed Admin View Only. Click to unmark.' : 'Mark device for Seed Admin View Only'}
                           >
-                            <Trash2 size={12} /> Remove from View
+                            {d.is_seed_admin_only ? '🔒 Seed-Only' : '👁️ Make Seed-Only'}
                           </button>
-                        )}
-                        <button
-                          onClick={() => handleRotateStreamLink(d)}
-                          className="btn btn-secondary"
-                          style={{ padding: '6px 12px', fontSize: '12px' }}
-                          title="Rotate stream link and issue a new 16-character access key"
-                        >
-                          <RotateCcw size={12} /> Rotate Link
-                        </button>
-                        {d.stream_url ? (
-                          <a 
-                            href={d.stream_url} 
-                            target="_blank" 
-                            rel="noreferrer" 
-                            className="btn btn-primary" 
-                            style={{ padding: '6px 12px', fontSize: '12px' }}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
-                              if (isMobile) {
-                                window.open(d.stream_url, '_blank');
-                              } else {
-                                const screenW = window.screen.availWidth || window.screen.width || 1280;
-                                const screenH = window.screen.availHeight || window.screen.height || 900;
-                                const w = Math.min(screenW - 20, 520);
-                                const h = Math.min(screenH - 40, 940);
-                                const left = Math.max(0, Math.round((screenW - w) / 2));
-                                const top = Math.max(0, Math.round((screenH - h) / 2));
-                                window.open(d.stream_url, `Stream_${d.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
-                              }
-                            }}
-                          >
-                            Open Stream <ExternalLink size={12} />
-                          </a>
-                        ) : (
-                          <span className="badge badge-warning">Offline</span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          {canOpen && d.stream_url ? (
+                            <a 
+                              href={d.stream_url} 
+                              target="_blank" 
+                              rel="noreferrer" 
+                              className="btn btn-primary" 
+                              style={{ padding: '6px 12px', fontSize: '12px' }}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
+                                if (isMobile) {
+                                  window.open(d.stream_url, '_blank');
+                                } else {
+                                  const screenW = window.screen.availWidth || window.screen.width || 1280;
+                                  const screenH = window.screen.availHeight || window.screen.height || 900;
+                                  const w = Math.min(screenW - 20, 520);
+                                  const h = Math.min(screenH - 40, 940);
+                                  const left = Math.max(0, Math.round((screenW - w) / 2));
+                                  const top = Math.max(0, Math.round((screenH - h) / 2));
+                                  window.open(d.stream_url, `Stream_${d.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                                }
+                              }}
+                            >
+                              {isAssignedToMe && !isSeed ? 'Open Assigned Stream' : 'Open Stream'} <ExternalLink size={12} />
+                            </a>
+                          ) : canOpen && !d.stream_url ? (
+                            <span className="badge badge-warning">Offline</span>
+                          ) : (
+                            <span className="badge badge-secondary" style={{ padding: '6px 12px', fontSize: '11px' }}>
+                              👁️ CCTV Wall View Only
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

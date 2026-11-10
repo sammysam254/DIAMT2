@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import DashboardLayout from '../layouts/DashboardLayout';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Shield, Key, CheckCircle, XCircle, Users, RefreshCw, Lock, Unlock, UserX, UserCheck, Smartphone, Trash2, RotateCcw, EyeOff, Zap, Power, Wifi, WifiOff, HelpCircle, Activity } from 'lucide-react';
+import { Shield, Key, CheckCircle, XCircle, Users, RefreshCw, Lock, Unlock, UserX, UserCheck, Smartphone, Trash2, RotateCcw, EyeOff, Zap, Power, Wifi, WifiOff, HelpCircle, Activity, ExternalLink } from 'lucide-react';
 import CctvWall from '../components/CctvWall';
 import DeviceAllocationSection from '../components/DeviceAllocationSection';
 import SystemLogsModal from '../components/SystemLogsModal';
@@ -245,6 +245,21 @@ export default function SeedAdminDashboard() {
 
   const isSeedOwner = (p) => (import.meta.env.VITE_SEED_ADMIN_EMAIL && p.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase()) || p.role === 'seed_admin';
 
+  const toggleSeedAdminOnly = async (deviceId, currentState) => {
+    const nextState = !currentState;
+    try {
+      await supabase.from('devices').update({
+        is_seed_admin_only: nextState,
+        updated_at: new Date().toISOString()
+      }).eq('id', deviceId);
+
+      setDevices(prev => prev.map(d => d.id === deviceId ? { ...d, is_seed_admin_only: nextState } : d));
+      alert(`✅ Device view mode updated: ${nextState ? 'SEED ADMIN VIEW ONLY' : 'STANDARD VIEW'}`);
+    } catch (err) {
+      alert('Error updating device view mode: ' + err.message);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -324,6 +339,7 @@ export default function SeedAdminDashboard() {
                   <th style={{ padding: '12px' }}>SERIAL</th>
                   <th style={{ padding: '12px' }}>MONTHLY FEE ($ USD)</th>
                   <th style={{ padding: '12px' }}>RENTALS STORE RELEASE</th>
+                  <th style={{ padding: '12px' }}>SEED ONLY MODE</th>
                   <th style={{ padding: '12px' }}>VISIBILITY STATUS</th>
                   <th style={{ padding: '12px', textAlign: 'right' }}>SEED ADMIN ACTION</th>
                 </tr>
@@ -335,11 +351,21 @@ export default function SeedAdminDashboard() {
                   const isOnline = d.status === 'online' && (!d.last_seen || (now - lastTime < 180000));
                   const isDeleted = Boolean(d.is_deleted_from_view);
                   const isAvailableRental = Boolean(d.is_available_for_rental);
+                  const isSeedOnly = Boolean(d.is_seed_admin_only);
                   const price = d.monthly_rental_price || 49;
 
                   return (
                     <tr key={d.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                      <td style={{ padding: '14px 12px', fontWeight: 700 }}>{d.brand} {d.model}</td>
+                      <td style={{ padding: '14px 12px', fontWeight: 700 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span>{d.brand} {d.model}</span>
+                          {isSeedOnly && (
+                            <span className="badge badge-warning" style={{ fontSize: '9px', padding: '1px 5px', background: 'rgba(245, 158, 11, 0.25)', color: '#fbbf24' }}>
+                              🔒 SEED ONLY
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td style={{ padding: '14px 12px', fontFamily: 'monospace' }}>{d.serial}</td>
                       <td style={{ padding: '14px 12px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -363,6 +389,16 @@ export default function SeedAdminDashboard() {
                         </button>
                       </td>
                       <td style={{ padding: '14px 12px' }}>
+                        <button
+                          onClick={() => toggleSeedAdminOnly(d.id, isSeedOnly)}
+                          className={`btn ${isSeedOnly ? 'btn-warning' : 'btn-secondary'}`}
+                          style={{ padding: '4px 10px', fontSize: '11px' }}
+                          title={isSeedOnly ? 'Device restricted to Seed Admin only. Click to restore to standard view.' : 'Restrict device view & control exclusively to Seed Admin.'}
+                        >
+                          {isSeedOnly ? '🔒 Seed-Only' : '👁️ Standard View'}
+                        </button>
+                      </td>
+                      <td style={{ padding: '14px 12px' }}>
                         {isDeleted ? (
                           <span className="badge badge-danger" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                             <EyeOff size={11} /> DELETED FROM VIEW
@@ -375,6 +411,32 @@ export default function SeedAdminDashboard() {
                       </td>
                       <td style={{ padding: '14px 12px', textAlign: 'right' }}>
                         <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                          {d.stream_url && (
+                            <a 
+                              href={d.stream_url} 
+                              target="_blank" 
+                              rel="noreferrer" 
+                              className="btn btn-primary" 
+                              style={{ padding: '6px 10px', fontSize: '11px' }}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
+                                if (isMobile) {
+                                  window.open(d.stream_url, '_blank');
+                                } else {
+                                  const screenW = window.screen.availWidth || window.screen.width || 1280;
+                                  const screenH = window.screen.availHeight || window.screen.height || 900;
+                                  const w = Math.min(screenW - 20, 520);
+                                  const h = Math.min(screenH - 40, 940);
+                                  const left = Math.max(0, Math.round((screenW - w) / 2));
+                                  const top = Math.max(0, Math.round((screenH - h) / 2));
+                                  window.open(d.stream_url, `Stream_${d.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                                }
+                              }}
+                            >
+                              Open Stream <ExternalLink size={11} />
+                            </a>
+                          )}
                           <button
                             onClick={() => handleRotateStreamLink(d)}
                             className="btn btn-secondary"

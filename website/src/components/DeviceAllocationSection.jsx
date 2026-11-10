@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Key, Smartphone, Users, Lock, CheckCircle, RefreshCw, Trash2, ExternalLink } from 'lucide-react';
+import { Key, Smartphone, Users, Lock, CheckCircle, RefreshCw, Trash2, ExternalLink, Shield } from 'lucide-react';
 import { generate16CharKey, generate6DigitPin, rotateUrlWithKeyAndPin } from '../lib/keyGenerator';
 
 export default function DeviceAllocationSection({ currentUser }) {
@@ -12,6 +12,10 @@ export default function DeviceAllocationSection({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [assigning, setAssigning] = useState(false);
   const [unassigningId, setUnassigningId] = useState(null);
+
+  const userEmail = (currentUser?.email || '').toLowerCase().trim();
+  const seedEnvEmail = (import.meta.env.VITE_SEED_ADMIN_EMAIL || '').toLowerCase().trim();
+  const isSeedAdmin = currentUser?.role === 'seed_admin' || (seedEnvEmail && userEmail === seedEnvEmail);
 
   const isDeviceOnline = (d) => {
     if (!d || d.is_deleted_from_view) return false;
@@ -31,7 +35,11 @@ export default function DeviceAllocationSection({ currentUser }) {
         .order('created_at', { ascending: false });
 
       if (dErr) console.error('Error fetching devices:', dErr);
-      const visibleDevices = (dData || []).filter(d => !d.is_deleted_from_view);
+      const visibleDevices = (dData || []).filter(d => {
+        if (d.is_deleted_from_view) return false;
+        if (d.is_seed_admin_only && !isSeedAdmin) return false;
+        return true;
+      });
       setDevices(visibleDevices);
 
       // 2. Fetch all active profiles (workers, admins, super_admins, seed_admin)
@@ -50,7 +58,11 @@ export default function DeviceAllocationSection({ currentUser }) {
         .select('*, devices(*), profiles!assigned_to_user_id(*)');
 
       if (aErr) console.error('Error fetching assignments:', aErr);
-      const validAssignments = (aData || []).filter(a => a.devices && !a.devices.is_deleted_from_view);
+      const validAssignments = (aData || []).filter(a => {
+        if (!a.devices || a.devices.is_deleted_from_view) return false;
+        if (a.devices.is_seed_admin_only && !isSeedAdmin && a.assigned_to_user_id !== currentUser?.id) return false;
+        return true;
+      });
       setAssignments(validAssignments);
     } catch (e) {
       console.error('Error loading allocation section:', e);
@@ -220,64 +232,78 @@ export default function DeviceAllocationSection({ currentUser }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Assign Device Form */}
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
-          <h3 style={{ fontSize: '16px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
-            <Key size={18} color="var(--primary)" /> Allocate Device Stream Access
-          </h3>
-          <button onClick={loadAllocationData} className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '12px' }}>
-            <RefreshCw size={14} /> Refresh List
-          </button>
-        </div>
+      {/* Assign Device Form - Reserved strictly for Seed Admin */}
+      {isSeedAdmin ? (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+              <Key size={18} color="var(--primary)" /> Allocate Device Stream Access (Seed Admin)
+            </h3>
+            <button onClick={loadAllocationData} className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '12px' }}>
+              <RefreshCw size={14} /> Refresh List
+            </button>
+          </div>
 
-        <form onSubmit={handleAssign} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px', alignItems: 'end' }}>
-          <div>
-            <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-              SELECT DEVICE ({devices.length} Available)
-            </label>
-            <select 
-              className="input-field" 
-              value={selectedDevice} 
-              onChange={e => setSelectedDevice(e.target.value)}
-              required
-            >
-              <option value="">-- Choose Device --</option>
-              {devices.map(d => {
-                const online = isDeviceOnline(d);
-                return (
-                  <option key={d.id} value={d.id}>
-                    {d.brand || 'Android'} {d.model || 'Device'} ({d.serial}) [{online ? '🟢 ONLINE' : '🔴 OFFLINE'}]
+          <form onSubmit={handleAssign} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px', alignItems: 'end' }}>
+            <div>
+              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                SELECT DEVICE ({devices.length} Available)
+              </label>
+              <select 
+                className="input-field" 
+                value={selectedDevice} 
+                onChange={e => setSelectedDevice(e.target.value)}
+                required
+              >
+                <option value="">-- Choose Device --</option>
+                {devices.map(d => {
+                  const online = isDeviceOnline(d);
+                  return (
+                    <option key={d.id} value={d.id}>
+                      {d.brand || 'Android'} {d.model || 'Device'} ({d.serial}) [{online ? '🟢 ONLINE' : '🔴 OFFLINE'}]
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            <div>
+              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                SELECT USER ({users.length} Active Accounts)
+              </label>
+              <select 
+                className="input-field" 
+                value={selectedUser} 
+                onChange={e => setSelectedUser(e.target.value)}
+                required
+              >
+                <option value="">-- Choose Worker / Admin / User --</option>
+                {users.map(u => (
+                  <option key={u.id} value={u.id}>
+                    {u.email} ({u.role ? u.role.replace('_', ' ').toUpperCase() : 'USER'})
                   </option>
-                );
-              })}
-            </select>
-          </div>
+                ))}
+              </select>
+            </div>
 
-          <div>
-            <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-              SELECT USER ({users.length} Active Accounts)
-            </label>
-            <select 
-              className="input-field" 
-              value={selectedUser} 
-              onChange={e => setSelectedUser(e.target.value)}
-              required
-            >
-              <option value="">-- Choose Worker / Admin / User --</option>
-              {users.map(u => (
-                <option key={u.id} value={u.id}>
-                  {u.email} ({u.role ? u.role.replace('_', ' ').toUpperCase() : 'USER'})
-                </option>
-              ))}
-            </select>
+            <button type="submit" className="btn btn-primary" disabled={assigning} style={{ height: '42px' }}>
+              <CheckCircle size={16} /> {assigning ? 'Allocating...' : 'Allocate & Generate Password'}
+            </button>
+          </form>
+        </div>
+      ) : (
+        <div className="card" style={{ background: 'rgba(56, 189, 248, 0.05)', borderColor: 'rgba(56, 189, 248, 0.25)', padding: '18px 22px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Shield size={24} color="var(--primary)" />
+            <div>
+              <strong style={{ fontSize: '14px', color: '#fff' }}>Device Stream Allocation Authority</strong>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '4px 0 0 0' }}>
+                Device stream assignment is managed exclusively by <strong>Seed Admin</strong>. Admins and Super Admins monitor live devices through the CCTV Wall and can only open devices assigned directly to their account.
+              </p>
+            </div>
           </div>
-
-          <button type="submit" className="btn btn-primary" disabled={assigning} style={{ height: '42px' }}>
-            <CheckCircle size={16} /> {assigning ? 'Allocating...' : 'Allocate & Generate Password'}
-          </button>
-        </form>
-      </div>
+        </div>
+      )}
 
       {/* Active Device Allocations Table */}
       <div className="card">
@@ -308,6 +334,8 @@ export default function DeviceAllocationSection({ currentUser }) {
                   const userEmail = a.profiles?.email || 'Unknown User';
                   const userRole = a.profiles?.role ? a.profiles.role.replace('_', ' ').toUpperCase() : 'USER';
                   const online = isDeviceOnline(a.devices);
+                  const isAssignedToCurrentUser = a.assigned_to_user_id === currentUser?.id;
+                  const canOpenStream = isSeedAdmin || isAssignedToCurrentUser;
 
                   return (
                     <tr key={a.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
@@ -316,6 +344,11 @@ export default function DeviceAllocationSection({ currentUser }) {
                           <Smartphone size={16} color="var(--primary)" />
                           <span>{deviceName}</span>
                           <span style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>({a.devices?.serial})</span>
+                          {a.devices?.is_seed_admin_only && (
+                            <span className="badge badge-warning" style={{ fontSize: '9px', padding: '1px 5px', background: 'rgba(245, 158, 11, 0.25)', color: '#fbbf24' }}>
+                              🔒 SEED ONLY
+                            </span>
+                          )}
                           <span className={`badge ${online ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '10px', padding: '2px 6px' }}>
                             {online ? 'ONLINE' : 'OFFLINE'}
                           </span>
@@ -329,12 +362,12 @@ export default function DeviceAllocationSection({ currentUser }) {
                         🔑 {a.access_password}
                       </td>
                       <td style={{ padding: '14px 12px', fontSize: '12px', fontFamily: 'monospace' }}>
-                        {a.devices?.stream_url ? (
+                        {canOpenStream && a.devices?.stream_url ? (
                           <a 
                             href={a.devices.stream_url} 
                             target="_blank" 
                             rel="noreferrer" 
-                            style={{ color: 'var(--primary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                            style={{ color: 'var(--primary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}
                             onClick={(e) => {
                               e.preventDefault();
                               const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
@@ -353,30 +386,38 @@ export default function DeviceAllocationSection({ currentUser }) {
                           >
                             Open Stream <ExternalLink size={12} />
                           </a>
-                        ) : (
+                        ) : canOpenStream && !a.devices?.stream_url ? (
                           <span style={{ color: 'var(--text-muted)' }}>Offline</span>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                            🔒 View on CCTV Wall
+                          </span>
                         )}
                       </td>
                       <td style={{ padding: '14px 12px', textAlign: 'right' }}>
-                        <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
-                          <button
-                            onClick={() => handleReKeyAssignment(a.id, deviceName, userEmail, a.devices?.serial, a.devices?.stream_url)}
-                            className="btn btn-secondary"
-                            style={{ padding: '6px 10px', fontSize: '11px' }}
-                            title="Rotate stream link and issue a new 6-digit PIN"
-                          >
-                            <Key size={12} /> Rotate & Re-Key
-                          </button>
-                          <button
-                            onClick={() => handleRevokeAssignment(a.id, deviceName, userEmail, a.devices?.id)}
-                            disabled={unassigningId === a.id}
-                            className="btn btn-danger"
-                            style={{ padding: '6px 10px', fontSize: '11px' }}
-                            title="Unallocate device and remove from worker dashboard completely, releasing for re-linking"
-                          >
-                            <Trash2 size={12} /> {unassigningId === a.id ? 'Unallocating...' : 'Unallocate Device'}
-                          </button>
-                        </div>
+                        {isSeedAdmin ? (
+                          <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                            <button
+                              onClick={() => handleReKeyAssignment(a.id, deviceName, userEmail, a.devices?.serial, a.devices?.stream_url)}
+                              className="btn btn-secondary"
+                              style={{ padding: '6px 10px', fontSize: '11px' }}
+                              title="Rotate stream link and issue a new 6-digit PIN"
+                            >
+                              <Key size={12} /> Rotate & Re-Key
+                            </button>
+                            <button
+                              onClick={() => handleRevokeAssignment(a.id, deviceName, userEmail, a.devices?.id)}
+                              disabled={unassigningId === a.id}
+                              className="btn btn-danger"
+                              style={{ padding: '6px 10px', fontSize: '11px' }}
+                              title="Unallocate device and remove from worker dashboard completely, releasing for re-linking"
+                            >
+                              <Trash2 size={12} /> {unassigningId === a.id ? 'Unallocating...' : 'Unallocate Device'}
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="badge badge-secondary" style={{ fontSize: '11px' }}>Seed Admin Managed</span>
+                        )}
                       </td>
                     </tr>
                   );

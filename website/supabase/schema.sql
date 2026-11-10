@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS public.devices (
 );
 
 -- Ensure columns exist even if table was created previously
+ALTER TABLE public.devices ADD COLUMN IF NOT EXISTS is_seed_admin_only BOOLEAN DEFAULT FALSE;
 ALTER TABLE public.devices ADD COLUMN IF NOT EXISTS is_deleted_from_view BOOLEAN DEFAULT FALSE;
 ALTER TABLE public.devices ADD COLUMN IF NOT EXISTS is_available_for_rental BOOLEAN DEFAULT FALSE;
 ALTER TABLE public.devices ADD COLUMN IF NOT EXISTS monthly_rental_price NUMERIC(10,2) DEFAULT 49.00;

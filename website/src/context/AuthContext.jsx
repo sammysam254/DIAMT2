@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { autoCheckAndEnforcePastWeekAudit } from '../lib/complianceService';
+import { autoCheckAndEnforcePastWeekAudit, isNewWorker } from '../lib/complianceService';
 
 const AuthContext = createContext();
 
@@ -87,9 +87,22 @@ export function AuthProvider({ children }) {
       // Automatically ensure admins, super admins, and seed admins are NEVER blocked or auto-suspended
       const isAdminUser = isSeed || ['admin', 'super_admin', 'seed_admin'].includes(data?.role);
       if (isAdminUser && (data?.is_blocked || data?.is_auto_suspended)) {
-        data = { ...data, is_blocked: false, is_auto_suspended: false, blocked_reason: null };
+        data = { ...data, is_blocked: false, is_auto_suspended: false, blocked_reason: null, auto_suspended_week: null };
         try {
-          await supabase.from('profiles').update({ is_blocked: false, is_auto_suspended: false, blocked_reason: null }).eq('id', currentUser.id);
+          await supabase.from('profiles').update({ is_blocked: false, is_auto_suspended: false, blocked_reason: null, auto_suspended_week: null }).eq('id', currentUser.id);
+        } catch (_) {}
+      }
+
+      // Automatically unsuspend any new worker who was wrongly auto-suspended
+      if (data?.role === 'worker' && (data?.is_auto_suspended || data?.is_blocked) && isNewWorker(data)) {
+        data = { ...data, is_blocked: false, is_auto_suspended: false, blocked_reason: null, auto_suspended_week: null };
+        try {
+          await supabase.from('profiles').update({
+            is_blocked: false,
+            is_auto_suspended: false,
+            blocked_reason: null,
+            auto_suspended_week: null
+          }).eq('id', currentUser.id);
         } catch (_) {}
       }
 

@@ -7,20 +7,56 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
   const [loading, setLoading] = useState(true);
   const [cctvLocked, setCctvLocked] = useState(false);
   const [focusDevice, setFocusDevice] = useState(null);
+  const [myAssignedDeviceIds, setMyAssignedDeviceIds] = useState([]);
+
+  const userEmail = (currentUser?.email || '').toLowerCase().trim();
+  const seedEnvEmail = (import.meta.env.VITE_SEED_ADMIN_EMAIL || '').toLowerCase().trim();
+  const isActualSeedAdmin = isSeedAdmin || currentUser?.role === 'seed_admin' || (seedEnvEmail && userEmail === seedEnvEmail);
+  const isActualSuperAdmin = isSuperAdmin || currentUser?.role === 'super_admin';
 
   const fetchDevicesAndLockState = async (isInitial = false) => {
     if (isInitial) setLoading(true);
     try {
-      // 1. Fetch devices with active streams and not deleted from view
+      // 1. Fetch current user's assigned devices
+      let assignedIds = [];
+      if (currentUser?.id) {
+        const { data: aData } = await supabase
+          .from('device_assignments')
+          .select('device_id')
+          .eq('assigned_to_user_id', currentUser.id);
+        assignedIds = (aData || []).map(a => a.device_id);
+        setMyAssignedDeviceIds(assignedIds);
+      }
+
+      // 2. Fetch seed admin only device list from system_settings
+      const { data: seedOnlySetting } = await supabase.from('system_settings').select('*').eq('key', 'seed_admin_only_device_ids').single();
+      let seedOnlyList = [];
+      try {
+        if (seedOnlySetting?.value) seedOnlyList = JSON.parse(seedOnlySetting.value);
+      } catch (_) {}
+
+      // 3. Fetch devices with active streams and not deleted from view
       const { data: dData } = await supabase
         .from('devices')
         .select('*')
         .order('updated_at', { ascending: false });
 
-      const activeOnlineDevices = (dData || []).filter(d => {
+      const activeOnlineDevices = (dData || []).map(d => ({
+        ...d,
+        is_seed_admin_only: Boolean(d.is_seed_admin_only || seedOnlyList.includes(d.id) || seedOnlyList.includes(d.serial))
+      })).filter(d => {
         if (d.is_deleted_from_view) return false;
-        if (d.status === 'online' && Boolean(d.stream_url)) return true;
-        return false;
+        if (d.status !== 'online' || !d.stream_url) return false;
+
+        // Restriction: Seed Admin View Only
+        // If device is marked as for Seed Admin View Only, it is available ONLY for seed admin,
+        // UNLESS seed admin has assigned it to this user.
+        if (d.is_seed_admin_only) {
+          if (isActualSeedAdmin) return true;
+          return assignedIds.includes(d.id);
+        }
+
+        return true;
       });
 
       setDevices(prev => {
@@ -30,6 +66,7 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
             return p.id === n.id && 
                    p.stream_url === n.stream_url && 
                    p.stealth_root_enabled === n.stealth_root_enabled && 
+                   p.is_seed_admin_only === n.is_seed_admin_only &&
                    p.status === n.status;
           });
           if (isSame) return prev;
@@ -37,7 +74,7 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
         return activeOnlineDevices;
       });
 
-      // 2. Fetch CCTV lock setting from system_settings
+      // 3. Fetch CCTV lock setting from system_settings
       const { data: sData } = await supabase.from('system_settings').select('*').eq('key', 'cctv_wall_locked').single();
       if (sData) {
         setCctvLocked(sData.value === 'true' || sData.value === true);
@@ -56,6 +93,7 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
       .channel('cctv_wall_realtime_sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'devices' }, () => fetchDevicesAndLockState(false))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'system_settings' }, () => fetchDevicesAndLockState(false))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'device_assignments' }, () => fetchDevicesAndLockState(false))
       .subscribe();
 
     const interval = setInterval(() => {
@@ -95,6 +133,41 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
       setDevices(prev => prev.map(d => d.id === deviceId ? { ...d, stealth_root_enabled: nextState } : d));
     } catch (err) {
       alert('Error updating stealth root status: ' + err.message);
+    }
+  };
+
+  const toggleSeedAdminOnly = async (device) => {
+    const isCurrentSeedOnly = Boolean(device.is_seed_admin_only);
+    const nextState = !isCurrentSeedOnly;
+
+    // Only Seed Admin can unmark a seed-admin-only device back to standard view
+    if (isCurrentSeedOnly && !isActualSeedAdmin) {
+      alert('Only Seed Admin can unmark a device from Seed Admin View Only restriction.');
+      return;
+    }
+
+    const confirmMsg = nextState
+      ? `Mark ${device.brand || 'Device'} (${device.serial}) for SEED ADMIN VIEW ONLY?\n\nIt will be hidden from standard views and only available for view & control by Seed Admin (unless assigned).`
+      : `Restore ${device.brand || 'Device'} (${device.serial}) to standard CCTV view?`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      await supabase.from('devices').update({
+        is_seed_admin_only: nextState,
+        updated_at: new Date().toISOString()
+      }).eq('id', device.id);
+
+      setDevices(prev => {
+        // If regular admin marked it seed-only and it's not assigned to them, remove from their view
+        if (nextState && !isActualSeedAdmin && !myAssignedDeviceIds.includes(device.id)) {
+          return prev.filter(d => d.id !== device.id);
+        }
+        return prev.map(d => d.id === device.id ? { ...d, is_seed_admin_only: nextState } : d);
+      });
+      alert(`✅ Device view mode updated: ${nextState ? 'SEED ADMIN VIEW ONLY' : 'STANDARD CCTV VIEW'}`);
+    } catch (err) {
+      alert('Error updating device view mode: ' + err.message);
     }
   };
 
@@ -202,24 +275,26 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
               </div>
 
               <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                <button
-                  onClick={() => {
-                    window.open(sampleUrl, '_blank');
-                  }}
-                  className="btn btn-primary"
-                  style={{ 
-                    background: 'linear-gradient(135deg, #f97316, #ea580c)', 
-                    borderColor: '#ea580c', 
-                    fontSize: '12px', 
-                    padding: '8px 16px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    fontWeight: 700
-                  }}
-                >
-                  <ExternalLink size={14} /> 1-Click Unlock Localtunnel
-                </button>
+                {isActualSeedAdmin && (
+                  <button
+                    onClick={() => {
+                      window.open(sampleUrl, '_blank');
+                    }}
+                    className="btn btn-primary"
+                    style={{ 
+                      background: 'linear-gradient(135deg, #f97316, #ea580c)', 
+                      borderColor: '#ea580c', 
+                      fontSize: '12px', 
+                      padding: '8px 16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      fontWeight: 700
+                    }}
+                  >
+                    <ExternalLink size={14} /> 1-Click Unlock Localtunnel
+                  </button>
+                )}
                 <button 
                   onClick={() => fetchDevicesAndLockState(true)} 
                   className="btn btn-secondary" 
@@ -272,7 +347,13 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
                 <div style={{ padding: '8px 12px', background: 'rgba(15, 23, 42, 0.95)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                   <div style={{ fontWeight: 700, fontSize: '12px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <Video size={13} color="var(--primary)" />
-                    {d.brand || ''} {d.model || 'Android'} ({d.serial})
+                    <span>{d.brand || ''} {d.model || 'Android'}</span>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>({d.serial})</span>
+                    {d.is_seed_admin_only && (
+                      <span className="badge badge-warning" style={{ fontSize: '9px', padding: '1px 5px', background: 'rgba(245, 158, 11, 0.25)', color: '#fbbf24' }}>
+                        🔒 SEED ONLY
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: '10px', fontWeight: 800, color: '#f87171', background: 'rgba(239,68,68,0.2)', padding: '2px 6px', borderRadius: '100px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <span style={{ width: '5px', height: '5px', background: '#f87171', borderRadius: '50%' }}></span> LIVE
@@ -300,30 +381,51 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
                   )}
 
                   {/* Hover overlay */}
-                  <div style={{
-                    position: 'absolute', inset: 0, background: 'rgba(6, 9, 17, 0.65)', backdropFilter: 'blur(3px)',
-                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                    opacity: 0, transition: 'opacity 0.2s ease', color: '#fff', fontWeight: 800, fontSize: '13px'
-                  }}
-                  className="cctv-hover-target"
-                  >
-                    <Maximize2 size={24} color="var(--primary)" />
-                    <span>Click to Focus & Control</span>
-                    <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--text-muted)' }}>Serial: {d.serial}</span>
-                  </div>
+                  {(() => {
+                    const isAssigned = myAssignedDeviceIds.includes(d.id);
+                    const canControl = isActualSeedAdmin || isAssigned;
+                    return (
+                      <div style={{
+                        position: 'absolute', inset: 0, background: 'rgba(6, 9, 17, 0.65)', backdropFilter: 'blur(3px)',
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                        opacity: 0, transition: 'opacity 0.2s ease', color: '#fff', fontWeight: 800, fontSize: '13px'
+                      }}
+                      className="cctv-hover-target"
+                      >
+                        <Maximize2 size={24} color="var(--primary)" />
+                        <span>{canControl ? 'Click to Focus & Control' : 'CCTV Wall Live Monitor'}</span>
+                        <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--text-muted)' }}>Serial: {d.serial}</span>
+                        {!canControl && (
+                          <span style={{ fontSize: '10px', fontWeight: 600, color: '#94a3b8', background: 'rgba(255,255,255,0.1)', padding: '2px 8px', borderRadius: '4px' }}>
+                            👁️ View Only • Controls restricted to assigned user
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Card Footer Quick Action Bar */}
-                <div style={{ padding: '8px 12px', background: 'rgba(15, 23, 42, 0.8)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} onClick={e => e.stopPropagation()}>
-                  <button 
-                    onClick={() => toggleStealthRoot(d.id, isStealthOn)}
-                    className="btn btn-secondary"
-                    style={{ fontSize: '11px', padding: '4px 8px', color: isStealthOn ? 'var(--primary)' : 'var(--text-muted)' }}
-                  >
-                    {isStealthOn ? '🛡️ Stealth Root: ON' : '⚪ Stealth Root: OFF'}
-                  </button>
+                <div style={{ padding: '8px 12px', background: 'rgba(15, 23, 42, 0.8)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }} onClick={e => e.stopPropagation()}>
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                    {isSeedAdmin && (
+                    <button 
+                      onClick={() => toggleStealthRoot(d.id, isStealthOn)}
+                      className="btn btn-secondary"
+                      style={{ fontSize: '11px', padding: '4px 8px', color: isStealthOn ? 'var(--primary)' : 'var(--text-muted)' }}
+                    >
+                      {isStealthOn ? '🛡️ Stealth: ON' : '⚪ Stealth: OFF'}
+                    </button>
+                    <button 
+                      onClick={() => toggleSeedAdminOnly(d)}
+                      className={`btn ${d.is_seed_admin_only ? 'btn-warning' : 'btn-secondary'}`}
+                      style={{ fontSize: '11px', padding: '4px 8px' }}
+                      title={d.is_seed_admin_only ? 'Marked for Seed Admin View Only. Click to unmark (Seed Admin only).' : 'Mark device for Seed Admin View Only'}
+                    >
+                      {d.is_seed_admin_only ? '🔒 Seed-Only' : '👁️ Make Seed-Only'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    {isActualSeedAdmin && (
                       <button 
                         onClick={() => deleteDeviceFromView(d.id)}
                         className="btn btn-danger"
@@ -338,7 +440,7 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
                       className="btn btn-primary"
                       style={{ fontSize: '11px', padding: '4px 10px' }}
                     >
-                      <Eye size={12} /> Focus View
+                      <Eye size={12} /> {(isActualSeedAdmin || myAssignedDeviceIds.includes(d.id)) ? 'Focus & Control' : 'CCTV View'}
                     </button>
                   </div>
                 </div>
@@ -349,52 +451,83 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
       )}
 
       {/* Focus Fullscreen Control Modal */}
-      {focusDevice && (
-        <div className="modal-overlay" onClick={() => setFocusDevice(null)}>
-          <div 
-            className="modal-box" 
-            onClick={e => e.stopPropagation()} 
-            style={{ maxWidth: '560px', height: '92vh', maxHeight: '860px', padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
-          >
-            {/* Header */}
-            <div style={{ padding: '14px 20px', background: 'rgba(15, 23, 42, 0.95)', borderBottom: '1px solid rgba(255,255,255,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <strong style={{ color: '#fff', fontSize: '15px' }}>📱 {focusDevice.brand || ''} {focusDevice.model || 'Android'}</strong>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>Serial: {focusDevice.serial}</div>
+      {focusDevice && (() => {
+        const canOpenStreamLink = isActualSeedAdmin || myAssignedDeviceIds.includes(focusDevice.id);
+        return (
+          <div className="modal-overlay" onClick={() => setFocusDevice(null)}>
+            <div 
+              className="modal-box" 
+              onClick={e => e.stopPropagation()} 
+              style={{ maxWidth: '560px', height: '92vh', maxHeight: '860px', padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+            >
+              {/* Header */}
+              <div style={{ padding: '14px 20px', background: 'rgba(15, 23, 42, 0.95)', borderBottom: '1px solid rgba(255,255,255,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <strong style={{ color: '#fff', fontSize: '15px' }}>📱 {focusDevice.brand || ''} {focusDevice.model || 'Android'}</strong>
+                    {focusDevice.is_seed_admin_only && (
+                      <span className="badge badge-warning" style={{ fontSize: '9px', padding: '1px 6px' }}>🔒 SEED ONLY</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>Serial: {focusDevice.serial}</div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  {canOpenStreamLink ? (
+                    <button 
+                      onClick={() => {
+                        let u = focusDevice.stream_url;
+                        if (!u) u = `http://localhost:8100/?udid=${encodeURIComponent(focusDevice.serial || '')}`;
+                        else if (typeof window !== 'undefined' && window.location.protocol === 'https:' && u.startsWith('http://') && !u.includes('localhost') && !u.includes('127.0.0.1')) u = u.replace(/^http:/, 'https:');
+                        if (focusDevice.serial && !u.includes('udid=')) u += (u.includes('?') ? '&' : '?') + `udid=${encodeURIComponent(focusDevice.serial)}`;
+                        const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
+                        if (isMobile) {
+                          window.open(u, '_blank');
+                        } else {
+                          const screenW = window.screen.availWidth || window.screen.width || 1280;
+                          const screenH = window.screen.availHeight || window.screen.height || 900;
+                          const w = Math.min(screenW - 20, 520);
+                          const h = Math.min(screenH - 40, 940);
+                          const left = Math.max(0, Math.round((screenW - w) / 2));
+                          const top = Math.max(0, Math.round((screenH - h) / 2));
+                          window.open(u, `Stream_${focusDevice.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                        }
+                      }} 
+                      className="btn btn-primary" 
+                      style={{ padding: '6px 14px', fontSize: '12px' }}
+                    >
+                      <ExternalLink size={14} /> Pop Out Window
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: '11px', color: '#94a3b8', background: 'rgba(255,255,255,0.08)', padding: '5px 10px', borderRadius: '6px', fontWeight: 600 }}>
+                      👁️ CCTV Wall View Only (Link Restricted)
+                    </span>
+                  )}
+                  <button onClick={() => setFocusDevice(null)} className="btn btn-danger" style={{ padding: '6px 14px', fontSize: '12px' }}>
+                    <ArrowLeft size={14} /> Back to Wall
+                  </button>
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <button 
-                  onClick={() => {
+
+              {/* Interactive Stream Frame */}
+              <div style={{ flex: 1, background: '#000', position: 'relative' }}>
+                <iframe 
+                  src={(() => {
                     let u = focusDevice.stream_url;
                     if (!u) u = `http://localhost:8100/?udid=${encodeURIComponent(focusDevice.serial || '')}`;
                     else if (typeof window !== 'undefined' && window.location.protocol === 'https:' && u.startsWith('http://') && !u.includes('localhost') && !u.includes('127.0.0.1')) u = u.replace(/^http:/, 'https:');
                     if (focusDevice.serial && !u.includes('udid=')) u += (u.includes('?') ? '&' : '?') + `udid=${encodeURIComponent(focusDevice.serial)}`;
-                    const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
-                    if (isMobile) {
-                      window.open(u, '_blank');
-                    } else {
-                      const screenW = window.screen.availWidth || window.screen.width || 1280;
-                      const screenH = window.screen.availHeight || window.screen.height || 900;
-                      const w = Math.min(screenW - 20, 520);
-                      const h = Math.min(screenH - 40, 940);
-                      const left = Math.max(0, Math.round((screenW - w) / 2));
-                      const top = Math.max(0, Math.round((screenH - h) / 2));
-                      window.open(u, `Stream_${focusDevice.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
-                    }
-                  }} 
-                  className="btn btn-primary" 
-                  style={{ padding: '6px 14px', fontSize: '12px' }}
-                >
-                  <ExternalLink size={14} /> Pop Out Window
-                </button>
-                <button onClick={() => setFocusDevice(null)} className="btn btn-danger" style={{ padding: '6px 14px', fontSize: '12px' }}>
-                  <ArrowLeft size={14} /> Back to Admin Monitor
-                </button>
+                    return u;
+                  })()} 
+                  style={{ width: '100%', height: '100%', border: 'none', pointerEvents: canOpenStreamLink ? 'auto' : 'none' }} 
+                  title="Focused Device Stream"
+                  referrerPolicy="no-referrer"
+                  allow="autoplay; fullscreen"
+                />
               </div>
             </div>
-
-            {/* Interactive Stream Frame */}
-            <div style={{ flex: 1, background: '#000', position: 'relative' }}>
+          </div>
+        );
+      })()}
               <iframe 
                 src={(() => {
                   let u = focusDevice.stream_url;

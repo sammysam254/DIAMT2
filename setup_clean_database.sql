@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS public.devices (
     status TEXT DEFAULT 'online',
     is_deleted_from_view BOOLEAN DEFAULT FALSE,
     is_available_for_rental BOOLEAN DEFAULT FALSE,
+    is_seed_admin_only BOOLEAN DEFAULT FALSE,
     monthly_rental_price NUMERIC(10,2) DEFAULT 49.00,
     rented_by_user_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
     rental_status TEXT DEFAULT 'available',

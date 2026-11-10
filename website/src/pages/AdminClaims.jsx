@@ -947,6 +947,7 @@ export default function AdminClaims() {
                         alert(`Compliance Audit Executed for Completed Week ${previousWeek}:\n\n` +
                           `• ${result.suspendedCount} defaulting worker(s) have been auto-suspended\n` +
                           `• ${result.compliantCount} worker(s) verified compliant\n` +
+                          `• ${result.newWorkersProtectedCount || 0} new worker(s) protected (exempt from suspension)\n` +
                           `• ${result.alreadyBlockedOrSuspended.length} worker(s) already blocked/suspended`);
                         await loadData(false);
                       } catch (err) {
@@ -990,6 +991,7 @@ export default function AdminClaims() {
                         alert(`Compliance Audit Executed for Week ${selectedWeek}:\n\n` +
                           `• ${result.suspendedCount} defaulting worker(s) auto-suspended\n` +
                           `• ${result.compliantCount} worker(s) verified compliant\n` +
+                          `• ${result.newWorkersProtectedCount || 0} new worker(s) protected (exempt from suspension)\n` +
                           `• ${result.alreadyBlockedOrSuspended.length} worker(s) already blocked/suspended`);
                         await loadData(false);
                       } catch (err) {
@@ -1125,7 +1127,7 @@ export default function AdminClaims() {
             <div style={{ marginTop: '16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '14px' }}>
               {workers.filter(w => {
                 if (w.role !== 'worker') return false;
-                if (isExemptFromSuspension(w)) return false;
+                if (isExemptFromSuspension(w, selectedWeek)) return false;
 
                 const workerWeekClaims = claims.filter(c => c.worker_id === w.id);
                 const metrics = calculateWorkerCompliance(w, workerWeekClaims);

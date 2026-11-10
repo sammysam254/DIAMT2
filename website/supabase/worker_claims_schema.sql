@@ -87,6 +87,10 @@ BEGIN
       AND p.role NOT IN ('admin', 'super_admin', 'seed_admin')
       AND COALESCE(p.is_auto_suspended, FALSE) = FALSE
       AND COALESCE(p.is_blocked, FALSE) = FALSE
+      -- NEW WORKERS ARE STRICTLY PROTECTED: Account must be at least 7 days old and created prior to audit week
+      AND p.created_at IS NOT NULL
+      AND p.created_at < (NOW() - INTERVAL '7 days')
+      AND TO_CHAR(p.created_at, 'IYYY-"W"IW') < audit_week
       AND COALESCE((
         SELECT SUM(wc.amount)
         FROM public.worker_claims wc
