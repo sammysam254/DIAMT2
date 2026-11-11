@@ -1410,6 +1410,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
             const now = audioCtx.currentTime;
             if (audioNextPlayTime < now) audioNextPlayTime = now;
+            if (audioNextPlayTime > now + 0.1) audioNextPlayTime = now; // Clamp max audio latency drift
             src.start(audioNextPlayTime);
             audioNextPlayTime += webAudioBuf.duration;
           } catch (err) {
@@ -1436,7 +1437,10 @@ function buildPlayerHtml(serial, screenW, screenH) {
   function playOpusPacket(bytes) {
     if (isMuted) return;
     if (!audioCtx) initAudio();
-    if (!audioCtx || audioCtx.state !== 'running') return;
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(function() {});
+    }
     if (!audioDecoderReady) {
       if (!initOpusDecoder()) return;
     }
@@ -1456,9 +1460,12 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
   function playRawPcm(bytes) {
     // Fallback: raw signed 16-bit LE stereo 48kHz PCM
-    initAudio();
-    if (!audioCtx || !gainNode || isMuted) return;
-    if (audioCtx.state !== 'running') return;
+    if (isMuted) return;
+    if (!audioCtx) initAudio();
+    if (!audioCtx || !gainNode) return;
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(function() {});
+    }
     try {
       const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
       const sampleCount = Math.floor(int16.length / 2);
@@ -1474,7 +1481,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
       src.connect(gainNode);
       const now = audioCtx.currentTime;
       if (audioNextPlayTime < now) audioNextPlayTime = now;
-      if (audioNextPlayTime > now + 0.12) audioNextPlayTime = now;
+      if (audioNextPlayTime > now + 0.1) audioNextPlayTime = now;
       src.start(audioNextPlayTime);
       audioNextPlayTime += buf.duration;
     } catch (_) {}
@@ -1483,7 +1490,11 @@ function buildPlayerHtml(serial, screenW, screenH) {
   // ── Mute toggle ──────────────────────────────────────────────────────────
   function toggleMute() {
     isMuted = !isMuted;
+    initAudio();
     if (gainNode) gainNode.gain.value = isMuted ? 0 : 1;
+    if (!isMuted && audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(function(){});
+    }
     if (isMuted && audioDecoder && audioDecoder.state !== 'closed') {
       try { audioDecoder.flush().catch(function(){}); } catch (_) {}
     }
@@ -1566,8 +1577,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
             const dbgRes = document.getElementById('dbgRes');
             if (dbgRes) dbgRes.textContent = w + ' x ' + h;
           }
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
+          ctx.imageSmoothingEnabled = false;
           ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
           frame.close();
           countFrame();
@@ -1957,10 +1967,10 @@ function buildPlayerHtml(serial, screenW, screenH) {
     if (!isNativeTouchActive) return;
     e.preventDefault();
     const now = performance.now();
-    // 10ms micro-throttle allows up to ~100Hz touch sampling without socket congestion
-    if (now - lastMoveTime < 10) return;
+    // 4ms micro-throttle allows ultra-responsive 240Hz touch sampling with instant in-hand response
+    if (now - lastMoveTime < 4) return;
     const c = coords(e);
-    if (Math.abs(c.x - lastX) < 1 && Math.abs(c.y - lastY) < 1) return;
+    if (Math.abs(c.x - lastX) < 0.5 && Math.abs(c.y - lastY) < 0.5) return;
     lastX = c.x; lastY = c.y;
     lastMoveTime = now;
     send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.6 });
@@ -1971,7 +1981,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     isNativeTouchActive = false;
     e.preventDefault();
     const c = coords(e);
-    if (Math.abs(c.x - lastX) >= 1 || Math.abs(c.y - lastY) >= 1) {
+    if (Math.abs(c.x - lastX) >= 0.5 || Math.abs(c.y - lastY) >= 0.5) {
       send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.5 });
     }
     send({ type: 'touch', action: 1, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0 });
@@ -2004,9 +2014,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
     if (e.pointerType === 'touch' || isNativeTouchActive || !isPointerDown) return;
     e.preventDefault();
     const now = performance.now();
-    if (now - lastMoveTime < 10) return;
+    if (now - lastMoveTime < 4) return;
     const c = coords(e);
-    if (Math.abs(c.x - lastX) < 1 && Math.abs(c.y - lastY) < 1) return;
+    if (Math.abs(c.x - lastX) < 0.5 && Math.abs(c.y - lastY) < 0.5) return;
     lastX = c.x; lastY = c.y;
     lastMoveTime = now;
     send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.6 });
@@ -2022,7 +2032,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
       activePointerId = null;
     }
     const c = coords(e);
-    if (Math.abs(c.x - lastX) >= 1 || Math.abs(c.y - lastY) >= 1) {
+    if (Math.abs(c.x - lastX) >= 0.5 || Math.abs(c.y - lastY) >= 0.5) {
       send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.5 });
     }
     send({ type: 'touch', action: 1, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0 });

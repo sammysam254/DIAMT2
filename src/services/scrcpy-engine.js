@@ -254,16 +254,21 @@ class ScrcpyEngine extends EventEmitter {
     ws._needsKeyframe = false;
     this.wsClients.add(ws);
 
-    // 1. Send cached SPS/PPS config & IDR keyframe immediately if available
-    const initialPacket = this._keyframeBuffer || this._configPacket;
-    if (initialPacket && ws.readyState === 1) {
-      try { ws.send(initialPacket, { binary: true }); } catch (_) {}
+    // Only send cached keyframe if it is fresh (< 1200ms old) to never flash an old previous screen
+    const isFresh = this._keyframeBuffer && this._keyframeTime && (Date.now() - this._keyframeTime < 1200);
+
+    if (isFresh && ws.readyState === 1) {
+      try { ws.send(this._keyframeBuffer, { binary: true }); } catch (_) {}
     } else {
-      // 2. Deliver instant screen snapshot ONLY if no video keyframe is available yet
+      // Send SPS/PPS configuration packet so WebCodecs knows profile & dimensions
+      if (this._configPacket && ws.readyState === 1) {
+        try { ws.send(this._configPacket, { binary: true }); } catch (_) {}
+      }
+      // Capture live instant screen snapshot of the CURRENT display
       this.captureInstantFrame(ws);
     }
 
-    // 3. Ensure device stays awake without sending disruptive menu keycodes
+    // Ensure device stays awake without sending disruptive menu keycodes
     try {
       this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
       this._adb(['shell', 'svc', 'power', 'stayon', 'true']).catch(() => {});
@@ -305,13 +310,16 @@ class ScrcpyEngine extends EventEmitter {
   sendKeyframeToClient(ws) {
     if (!ws || ws.readyState !== 1) return;
     ws._needsKeyframe = false;
-    // Prefer complete keyframe buffer (SPS+PPS+IDR) over standalone header config
-    const pkt = this._keyframeBuffer || this._configPacket;
-    if (pkt) {
-      try { ws.send(pkt, { binary: true }); } catch (_) {}
-    }
-    // Also deliver instant frame if video stream hasn't produced frames recently
-    if (!this._keyframeBuffer || Date.now() - this.lastDataTime > 2500) {
+
+    const isFresh = this._keyframeBuffer && this._keyframeTime && (Date.now() - this._keyframeTime < 1200);
+
+    if (isFresh) {
+      try { ws.send(this._keyframeBuffer, { binary: true }); } catch (_) {}
+    } else if (this._configPacket) {
+      // Send SPS/PPS config so decoder initializes cleanly without showing old previous screen
+      try { ws.send(this._configPacket, { binary: true }); } catch (_) {}
+      this.captureInstantFrame(ws);
+    } else {
       this.captureInstantFrame(ws);
     }
   }
@@ -661,13 +669,15 @@ class ScrcpyEngine extends EventEmitter {
     });
   }
 
-  async _startDedicatedAudioStream() {
+  async _startDedicatedAudioStream(codec = 'opus') {
     if (this._audioProc || !this.isRunning) return;
     const audioPort = this.videoPort + 50;
     const scidHex = '000000a1'; // Unique 31-bit session ID for dedicated audio instance
     const scidInt = '161';       // Decimal 161 = 0xa1
     
     try {
+      // Clean up any lingering zombie audio processes for this device session
+      await this._adb(['shell', 'pkill', '-9', '-f', `scid=${scidInt}`]).catch(() => {});
       try { await this._adb(['forward', '--remove', `tcp:${audioPort}`]); } catch (_) {}
       await this._adb(['forward', `tcp:${audioPort}`, `localabstract:scrcpy_${scidHex}`]);
 
@@ -680,35 +690,43 @@ class ScrcpyEngine extends EventEmitter {
         'video=false',
         'audio=true',
         'control=false',
-        'audio_codec=opus',
+        `audio_codec=${codec}`,
         'audio_bit_rate=64000',
-        'send_dummy_byte=true',
+        'send_dummy_byte=false',
         'cleanup=false'
       ];
 
-      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server on port ${audioPort}...`);
+      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server (${codec}) on port ${audioPort}...`);
       const proc = spawn(ADB_BIN, audioArgs, { windowsHide: true });
       this._audioProc = proc;
 
-      proc.stdout.on('data', () => {});
+      proc.stdout.on('data', (d) => {
+        const msg = d.toString().trim();
+        if (msg) logger.info(`[ScrcpyAudio ${this.serial}] ${msg}`);
+      });
       proc.stderr.on('data', (d) => {
         const msg = d.toString().trim();
-        if (msg) logger.debug(`[ScrcpyAudio ${this.serial}] ${msg}`);
+        if (msg) logger.info(`[ScrcpyAudio ${this.serial}] stderr: ${msg}`);
       });
 
-      proc.on('close', () => {
+      proc.on('close', (code) => {
+        logger.info(`[ScrcpyAudio ${this.serial}] Dedicated audio process closed (code: ${code})`);
         this._audioProc = null;
         if (this.audioSocket) {
           try { this.audioSocket.destroy(); } catch (_) {}
           this.audioSocket = null;
         }
+        // If opus fails or crashes, automatically fall back to raw PCM
+        if (codec === 'opus' && this.isRunning) {
+          setTimeout(() => this._startDedicatedAudioStream('raw'), 1500);
+        }
       });
 
-      // Give server 400ms to bind abstract socket, then connect single audio socket
-      await new Promise(r => setTimeout(r, 400));
+      // Give server 500ms to bind abstract socket, then connect single audio socket
+      await new Promise(r => setTimeout(r, 500));
       if (!this.isRunning) return;
 
-      this.audioSocket = await this._connectOne(audioPort, 20);
+      this.audioSocket = await this._connectOne(audioPort, 25);
       this.audioSocket.setNoDelay(true);
       this._pipeAudioToClients(this.audioSocket);
       logger.info(`[ScrcpyEngine ${this.serial}] Dedicated audio stream active on port ${audioPort}`);
@@ -718,6 +736,9 @@ class ScrcpyEngine extends EventEmitter {
       if (this._audioProc) {
         try { this._audioProc.kill(); } catch (_) {}
         this._audioProc = null;
+      }
+      if (codec === 'opus' && this.isRunning) {
+        setTimeout(() => this._startDedicatedAudioStream('raw'), 1500);
       }
     }
   }
@@ -885,6 +906,7 @@ class ScrcpyEngine extends EventEmitter {
 
         let broadcastPkt = payload;
         if (isIdr || (isKeyframe && !isConfig)) {
+          this._keyframeTime = Date.now();
           if (this._configPacket && !isSps) {
             // Always prepend SPS/PPS config to IDR slice so every keyframe is 100% self-contained for WebCodecs
             this._keyframeBuffer = Buffer.concat([this._configPacket, payload]);
@@ -929,13 +951,12 @@ class ScrcpyEngine extends EventEmitter {
       buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
 
       if (!headerDone) {
-        // Scrcpy 2.x sends: 1 dummy byte (0x00) + 4-byte codec ID (e.g. "opus")
-        // Total header = 5 bytes minimum
-        if (buf.length < 5) return;
+        // Scrcpy sends 4-byte codec ID (e.g. "opus" or "raw "), optionally preceded by 0x00 dummy byte
+        const hasDummy = (buf.length > 0 && buf[0] === 0x00);
+        const minHeader = hasDummy ? 5 : 4;
+        if (buf.length < minHeader) return;
 
-        let offset = 0;
-        if (buf[0] === 0x00) offset = 1;
-
+        let offset = hasDummy ? 1 : 0;
         const codecStr = buf.toString('utf8', offset, offset + 4).toLowerCase().trim().replace(/\0/g, '');
         logger.info(`[ScrcpyEngine ${this.serial}] Audio codec header detected: "${codecStr}"`);
         this._audioCodec = codecStr; // 'opus' or 'raw'
@@ -1080,6 +1101,7 @@ class ScrcpyEngine extends EventEmitter {
    *   [28-31] buttons i32BE (1 on DOWN/MOVE, 0 on UP)
    */
   sendTouchEvent(action, x, y, width, height, pressure = 1.0) {
+    this._keyframeBuffer = null; // Active interaction invalidates any older keyframe
     let targetW = this.scrcpyVideoWidth || this.videoWidth;
     let targetH = this.scrcpyVideoHeight || this.videoHeight;
     if (!targetW || !targetH) {
