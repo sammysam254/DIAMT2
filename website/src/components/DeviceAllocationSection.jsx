@@ -95,6 +95,10 @@ export default function DeviceAllocationSection({ currentUser }) {
 
   const handleAssign = async (e) => {
     e.preventDefault();
+    if (!isSeedAdmin) {
+      alert('Permission Denied: Only the Seed Administrator has clearance to allocate devices to users.');
+      return;
+    }
     if (!selectedDevice || !selectedUser) return alert('Please select both a device and a user');
 
     const existingSame = assignments.find(a => a.device_id === selectedDevice && a.assigned_to_user_id === selectedUser);
@@ -155,6 +159,10 @@ export default function DeviceAllocationSection({ currentUser }) {
   };
 
   const handleReKeyAssignment = async (assignmentId, deviceName, userEmail, serial, currentStreamUrl) => {
+    if (!isSeedAdmin) {
+      alert('Permission Denied: Only the Seed Administrator has clearance to rotate or re-key stream credentials.');
+      return;
+    }
     if (!window.confirm(`Rotate link & re-key 6-digit PIN for ${deviceName} assigned to ${userEmail}? This will instantly invalidate the current stream link and PIN.`)) return;
 
     const newPin = generate6DigitPin();
@@ -188,6 +196,10 @@ export default function DeviceAllocationSection({ currentUser }) {
   };
 
   const handleRevokeAssignment = async (assignmentId, deviceName, userEmail, deviceId) => {
+    if (!isSeedAdmin) {
+      alert('Permission Denied: Only the Seed Administrator has clearance to unallocate devices.');
+      return;
+    }
     if (!window.confirm(`Unallocate ${deviceName} assigned to ${userEmail}?\n\nThis will completely remove the device from their worker dashboard and make it available for re-linking.`)) return;
 
     setUnassigningId(assignmentId);

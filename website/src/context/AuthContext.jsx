@@ -117,20 +117,6 @@ export function AuthProvider({ children }) {
       }
 
       setProfile(data);
-
-      // Automated compliance audit enforcement for concluded weeks
-      if (data) {
-        autoCheckAndEnforcePastWeekAudit(data).then(result => {
-          if (result?.suspended) {
-            setProfile(prev => ({
-              ...prev,
-              is_auto_suspended: true,
-              is_blocked: true,
-              auto_suspended_week: result.week
-            }));
-          }
-        }).catch(err => console.error('[AuthContext] Audit error:', err));
-      }
     } catch (e) {
       console.error('Error fetching profile:', e);
     } finally {

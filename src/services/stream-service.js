@@ -314,6 +314,17 @@ async function verifyDeviceAccess(serial, inputCredential, isCctvView = false) {
       } catch (_) {}
     }
 
+    // In-memory runtime rotated keys and pins fallback
+    try {
+      const lic = require('./license-service');
+      if (lic && lic.ROTATED_STREAM_KEYS && lic.ROTATED_STREAM_KEYS.has(serial)) {
+        validKeys.push(String(lic.ROTATED_STREAM_KEYS.get(serial)).trim());
+      }
+      if (lic && lic.ROTATED_STREAM_PINS && lic.ROTATED_STREAM_PINS.has(serial)) {
+        validPins.push(String(lic.ROTATED_STREAM_PINS.get(serial)).trim());
+      }
+    } catch (_) {}
+
     // Cache verified credentials for fast sub-millisecond lookups
     try {
       await cache.set(cacheKey, { validKeys, validPins, status: devStatus }, cache.TTL.CREDENTIALS);

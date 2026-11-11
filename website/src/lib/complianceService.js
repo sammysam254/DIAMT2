@@ -51,10 +51,10 @@ export function isNewWorker(worker, auditWeek = null) {
   if (isNaN(createdAt)) return true;
 
   const now = Date.now();
-  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+  const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000; // 14-day grace period for new registrations
 
-  // Rule 1: Account created within the last 7 days
-  if (now - createdAt < SEVEN_DAYS_MS) {
+  // Rule 1: Account created within the last 14 days
+  if (now - createdAt < FOURTEEN_DAYS_MS) {
     return true;
   }
 
@@ -74,16 +74,18 @@ export function isNewWorker(worker, auditWeek = null) {
 }
 
 /**
- * Checks if current time is Sunday at 23:59 (the weekly cutoff window).
- * Rule: Auto-suspensions may ONLY occur at 23:59 of Sunday, never on any other day of the week.
+ * Checks if current time is the Sunday weekly cutoff window (23:59 / 00:59).
+ * Rule: Auto-suspensions may ONLY occur at 23:59 of Sunday / 00:59 Monday cutoff, never on any other day of the week.
  */
 export function isSundayCutoffTime(d = new Date()) {
-  const day = d.getDay(); // 0 is Sunday
+  const day = d.getDay(); // 0 is Sunday, 1 is Monday
   const hours = d.getHours();
   const minutes = d.getMinutes();
 
-  // Sunday at 23:55 - 23:59 (5-minute cutoff window before midnight transition)
-  return day === 0 && hours === 23 && minutes >= 55;
+  // Sunday night cutoff: Sunday 23:50 - 23:59 OR Monday 00:00 - 00:59 (the weekly cutoff window)
+  if (day === 0 && hours === 23 && minutes >= 50) return true;
+  if (day === 1 && hours === 0 && minutes <= 59) return true;
+  return false;
 }
 
 /**
@@ -213,13 +215,14 @@ export async function executeWeeklyComplianceAudit(auditWeek, { enforce = true, 
 export async function autoCheckAndEnforcePastWeekAudit(currentProfile) {
   if (!currentProfile) return null;
 
-  // STRICT TIMING GUARD: Auto-suspension can ONLY execute at 23:59 of Sunday, NOT any other day of the week!
-  if (!isSundayCutoffTime()) {
+  // Worker logins NEVER evaluate or enforce auto-suspension on themselves!
+  // Compliance audit is strictly executed during Sunday 23:59 / Monday 00:59 cutoff window by the background engine or admin.
+  if (currentProfile.role === 'worker') {
     return null;
   }
 
-  // STRICT NEW WORKER GUARD: New workers are NEVER auto-suspended
-  if (isNewWorker(currentProfile)) {
+  // STRICT TIMING GUARD: Auto-suspension can ONLY execute during Sunday 23:59 / 00:59 weekly cutoff!
+  if (!isSundayCutoffTime()) {
     return null;
   }
 
@@ -229,41 +232,7 @@ export async function autoCheckAndEnforcePastWeekAudit(currentProfile) {
   // If previousWeek is the same as currentWeek, no past week to audit yet
   if (previousWeek === currentWeek) return null;
 
-  // Case 1: Individual worker login enforcement on Sunday 23:59 cutoff
-  if (currentProfile.role === 'worker' && !isExemptFromSuspension(currentProfile, previousWeek)) {
-    if (!currentProfile.is_auto_suspended && !currentProfile.is_blocked) {
-      try {
-        const { data: prevClaims } = await supabase
-          .from('worker_claims')
-          .select('*')
-          .eq('worker_id', currentProfile.id)
-          .eq('week_identifier', previousWeek);
-
-        const metrics = calculateWorkerCompliance(currentProfile, prevClaims || []);
-        if (!metrics.isCompliant) {
-          // Worker failed previous week target!
-          const blockedReason = `Due to failing to achieve weekly target rule as per your subscribed plan (Submitted $${metrics.totalValidAmount.toFixed(2)} of $40.00 required for week ${previousWeek}), the system has auto-suspended you and you are required to leave the station before tomorrow at 8 AM, as your services are no longer needed.`;
-          
-          await supabase
-            .from('profiles')
-            .update({
-              is_auto_suspended: true,
-              is_blocked: true,
-              auto_suspended_week: previousWeek,
-              blocked_reason: blockedReason
-            })
-            .eq('id', currentProfile.id);
-
-          return { suspended: true, workerId: currentProfile.id, week: previousWeek };
-        }
-      } catch (err) {
-        console.error('[complianceService] Error checking worker past week compliance:', err);
-      }
-    }
-    return null;
-  }
-
-  // Case 2: Admin / Seed Admin login enforcement on Sunday 23:59 cutoff
+  // Admin / Seed Admin login enforcement on Sunday 23:59 / 00:59 cutoff
   const isAdmin = ['admin', 'super_admin', 'seed_admin'].includes(currentProfile.role) ||
                   (import.meta.env.VITE_SEED_ADMIN_EMAIL && currentProfile.email?.toLowerCase() === import.meta.env.VITE_SEED_ADMIN_EMAIL.toLowerCase());
 

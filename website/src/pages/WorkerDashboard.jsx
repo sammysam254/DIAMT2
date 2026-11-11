@@ -171,8 +171,14 @@ export default function WorkerDashboard() {
       let streamUrl = unlockModal.devices?.stream_url;
       if (streamUrl) {
         try {
+          if (typeof window !== 'undefined' && window.location.protocol === 'https:' && streamUrl.startsWith('http://') && !streamUrl.includes('localhost') && !streamUrl.includes('127.0.0.1')) {
+            streamUrl = streamUrl.replace(/^http:/, 'https:');
+          }
           const u = new URL(streamUrl);
           u.searchParams.set('pin', unlockModal.access_password.trim());
+          if (unlockModal.devices?.serial && !u.searchParams.has('udid')) {
+            u.searchParams.set('udid', unlockModal.devices.serial);
+          }
           streamUrl = u.toString();
         } catch (_) {
           streamUrl = streamUrl.replace(/([?&])pin=[^&]*/g, '$1');

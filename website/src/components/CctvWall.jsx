@@ -528,23 +528,6 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
           </div>
         );
       })()}
-              <iframe 
-                src={(() => {
-                  let u = focusDevice.stream_url;
-                  if (!u) u = `http://localhost:8100/?udid=${encodeURIComponent(focusDevice.serial || '')}`;
-                  else if (typeof window !== 'undefined' && window.location.protocol === 'https:' && u.startsWith('http://') && !u.includes('localhost') && !u.includes('127.0.0.1')) u = u.replace(/^http:/, 'https:');
-                  if (focusDevice.serial && !u.includes('udid=')) u += (u.includes('?') ? '&' : '?') + `udid=${encodeURIComponent(focusDevice.serial)}`;
-                  return u;
-                })()} 
-                style={{ width: '100%', height: '100%', border: 'none' }} 
-                title="Focused Device Stream"
-                referrerPolicy="no-referrer"
-                allow="autoplay; fullscreen"
-              />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
