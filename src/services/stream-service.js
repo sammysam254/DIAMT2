@@ -1599,8 +1599,8 @@ function buildPlayerHtml(serial, screenW, screenH) {
         } else if (u8[i+2] === 0 && u8[i+3] === 1 && i + 4 < u8.length) {
           ntype = u8[i+4] & 0x1f;
         }
-        // WebCodecs key/config types: NAL 5 (IDR keyframe), NAL 7 (SPS), NAL 8 (PPS)
-        if (ntype === 5 || ntype === 7 || ntype === 8) return true;
+        // WebCodecs requires NAL 5 (IDR) to initialize decoded state before deltas
+        if (ntype === 5) return true;
       }
     }
     return false;

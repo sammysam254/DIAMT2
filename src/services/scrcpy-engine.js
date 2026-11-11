@@ -227,6 +227,7 @@ class ScrcpyEngine extends EventEmitter {
     this._screencapActive = false;
     this.enableAudio = false;
     this.audioSocket = null;
+    this._audioProc = null;
   }
 
   get isReady() {
@@ -400,6 +401,9 @@ class ScrcpyEngine extends EventEmitter {
 
       logger.info(`[ScrcpyEngine ${this.serial}] High-speed 60FPS Scrcpy H264 engine active`);
 
+      // 6. Launch independent dedicated audio stream on its unique path (video and control never affected)
+      this._startDedicatedAudioStream().catch(() => {});
+
     } catch (err) {
       logger.warn(`[ScrcpyEngine ${this.serial}] Scrcpy start failed: ${err.message} — freeing phone socket and scheduling auto-recovery`);
       try {
@@ -419,12 +423,14 @@ class ScrcpyEngine extends EventEmitter {
     }
 
     // Dynamic resolution alignment: ensure max_size keeps dimensions divisible by 16 for all hardware encoders
-    let maxSizeArg = '1280';
+    const isTablet = Boolean(this.screenWidth && this.screenHeight && Math.min(this.screenWidth, this.screenHeight) >= 1000);
+    const candidateSizes = isTablet ? [1024, 960, 1152, 1280, 800] : [1280, 1024, 1152, 960, 800];
+    let maxSizeArg = isTablet ? '1024' : '1280';
     if (this.screenWidth && this.screenHeight) {
       const maxDim = Math.max(this.screenWidth, this.screenHeight);
       const minDim = Math.min(this.screenWidth, this.screenHeight);
       const aspect = minDim / maxDim;
-      for (const sz of [1280, 1024, 1152, 960, 800]) {
+      for (const sz of candidateSizes) {
         const scaledMin = Math.round(sz * aspect);
         if (sz % 16 === 0 && scaledMin % 16 === 0) {
           maxSizeArg = String(sz);
@@ -443,10 +449,9 @@ class ScrcpyEngine extends EventEmitter {
       'cleanup=false',
       'send_dummy_byte=true',
       'video_source=display',
-      'video_bit_rate=4500000',
+      'video_bit_rate=3000000',
       `max_size=${maxSizeArg}`,
       'max_fps=60',
-      'video_codec_options=i-frame-interval=1',
       'send_frame_meta=true',
       'show_touches=false',
       'stay_awake=true',
@@ -589,6 +594,14 @@ class ScrcpyEngine extends EventEmitter {
   }
 
   _cleanup() {
+    if (this._audioProc) {
+      try { this._audioProc.kill(); } catch (_) {}
+      this._audioProc = null;
+    }
+    if (this.audioSocket) {
+      try { this.audioSocket.destroy(); } catch (_) {}
+      this.audioSocket = null;
+    }
     if (this.videoSocket) {
       try { this.videoSocket.destroy(); } catch (_) {}
       this.videoSocket = null;
@@ -637,6 +650,67 @@ class ScrcpyEngine extends EventEmitter {
       logger.warn(`[ScrcpyEngine ${this.serial}] Control socket error: ${err.message}`);
       this.controlSocket = null;
     });
+  }
+
+  async _startDedicatedAudioStream() {
+    if (this._audioProc || !this.isRunning) return;
+    const audioPort = this.videoPort + 50;
+    const scidHex = '000000a1'; // Unique 31-bit session ID for dedicated audio instance
+    const scidInt = '161';       // Decimal 161 = 0xa1
+    
+    try {
+      try { await this._adb(['forward', '--remove', `tcp:${audioPort}`]); } catch (_) {}
+      await this._adb(['forward', `tcp:${audioPort}`, `localabstract:scrcpy_${scidHex}`]);
+
+      const audioArgs = [
+        '-s', this.serial, 'shell',
+        `CLASSPATH=/data/local/tmp/scrcpy-server.jar:${DEVICE_JAR_PATH}`,
+        'app_process', '/', 'com.genymobile.scrcpy.Server', '2.4',
+        'tunnel_forward=true',
+        `scid=${scidInt}`,
+        'video=false',
+        'audio=true',
+        'control=false',
+        'audio_codec=opus',
+        'audio_bit_rate=64000',
+        'send_dummy_byte=true',
+        'cleanup=false'
+      ];
+
+      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server on port ${audioPort}...`);
+      const proc = spawn(ADB_BIN, audioArgs, { windowsHide: true });
+      this._audioProc = proc;
+
+      proc.stdout.on('data', () => {});
+      proc.stderr.on('data', (d) => {
+        const msg = d.toString().trim();
+        if (msg) logger.debug(`[ScrcpyAudio ${this.serial}] ${msg}`);
+      });
+
+      proc.on('close', () => {
+        this._audioProc = null;
+        if (this.audioSocket) {
+          try { this.audioSocket.destroy(); } catch (_) {}
+          this.audioSocket = null;
+        }
+      });
+
+      // Give server 400ms to bind abstract socket, then connect single audio socket
+      await new Promise(r => setTimeout(r, 400));
+      if (!this.isRunning) return;
+
+      this.audioSocket = await this._connectOne(audioPort, 20);
+      this.audioSocket.setNoDelay(true);
+      this._pipeAudioToClients(this.audioSocket);
+      logger.info(`[ScrcpyEngine ${this.serial}] Dedicated audio stream active on port ${audioPort}`);
+
+    } catch (err) {
+      logger.warn(`[ScrcpyEngine ${this.serial}] Dedicated audio notice: ${err.message} (video & control unaffected)`);
+      if (this._audioProc) {
+        try { this._audioProc.kill(); } catch (_) {}
+        this._audioProc = null;
+      }
+    }
   }
 
   _connectOne(port, retries = 50) {
@@ -795,17 +869,19 @@ class ScrcpyEngine extends EventEmitter {
           }
         }
 
+        let broadcastPkt = payload;
         if (isIdr || (isKeyframe && !isConfig)) {
           if (this._configPacket && !isSps) {
             // Always prepend SPS/PPS config to IDR slice so every keyframe is 100% self-contained for WebCodecs
             this._keyframeBuffer = Buffer.concat([this._configPacket, payload]);
+            broadcastPkt = this._keyframeBuffer;
           } else {
             this._keyframeBuffer = Buffer.from(payload);
           }
         }
 
-        this._lastVideoPayload = payload;
-        this._broadcastVideo(payload, isKeyframe);
+        this._lastVideoPayload = broadcastPkt;
+        this._broadcastVideo(broadcastPkt, isKeyframe);
       }
 
       // Safety reset
