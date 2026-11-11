@@ -892,8 +892,8 @@ class ScrcpyEngine extends EventEmitter {
   _broadcastVideo(payload, isKeyframe = false) {
     for (const ws of this.wsClients) {
       if (ws.readyState === 1) {
-        // Backpressure protection: only throttle if socket buffer exceeds 256KB
-        if (ws.bufferedAmount > 256 * 1024) {
+        // Backpressure protection: only throttle if socket buffer exceeds 384KB
+        if (ws.bufferedAmount > 384 * 1024) {
           ws._needsKeyframe = true;
           continue;
         }

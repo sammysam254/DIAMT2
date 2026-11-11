@@ -139,11 +139,16 @@ function handleControl(type, data, serial, engine) {
   const ctrlOk = () => engine.controlSocket && !engine.controlSocket.destroyed;
 
   const nudgeScreen = () => {
-    setTimeout(() => {
-      if (engine && typeof engine.captureInstantFrame === 'function') {
-        engine.captureInstantFrame();
-      }
-    }, 70);
+    // Only capture instant screencap if video socket is NOT connected or active,
+    // otherwise scrcpy video pipeline is already streaming at 60fps and screencap -p
+    // will stall the tablet encoder and ADB pipeline.
+    if (engine && (!engine.videoSocket || engine.videoSocket.destroyed) && typeof engine.captureInstantFrame === 'function') {
+      setTimeout(() => {
+        if (!engine.videoSocket || engine.videoSocket.destroyed) {
+          engine.captureInstantFrame();
+        }
+      }, 70);
+    }
   };
 
   if (type === 'touch') {
@@ -183,8 +188,6 @@ function handleControl(type, data, serial, engine) {
         adbInput(serial, `input tap ${sx} ${sy}`);
       }
       nudgeScreen();
-    } else if (action === 1) {
-      nudgeScreen();
     }
   } else if (type === 'tap') {
     const x = parseFloat(get(data, 'x')), y = parseFloat(get(data, 'y'));
@@ -197,8 +200,8 @@ function handleControl(type, data, serial, engine) {
       const sx = Math.round((x / W) * realW);
       const sy = Math.round((y / H) * realH);
       adbInput(serial, `input tap ${sx} ${sy}`);
+      nudgeScreen();
     }
-    nudgeScreen();
   } else if (type === 'swipe') {
     const x1 = parseFloat(get(data, 'x1')), y1 = parseFloat(get(data, 'y1'));
     const x2 = parseFloat(get(data, 'x2')), y2 = parseFloat(get(data, 'y2'));
@@ -234,7 +237,6 @@ function handleControl(type, data, serial, engine) {
         const action = (i === steps) ? 1 : 2; // UP on final step
         const pVal = (action === 1) ? 0 : 0.6;
         engine.sendTouchEvent(action, currX, currY, W, H, pVal);
-        if (i === steps) nudgeScreen();
       }, Math.round(i * dt));
     }
   } else if (type === 'code' || type === 'key') {
@@ -246,8 +248,8 @@ function handleControl(type, data, serial, engine) {
     }
     if (!sent) {
       adbInput(serial, `input keyevent ${code}`);
+      nudgeScreen();
     }
-    nudgeScreen();
   } else if (type === 'text') {
     const text = get(data, 'text') || '';
     let sent = false;
@@ -257,8 +259,8 @@ function handleControl(type, data, serial, engine) {
     if (!sent) {
       const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
       adbInput(serial, `input text ${escaped}`);
+      nudgeScreen();
     }
-    nudgeScreen();
   } else if (type === 'reboot') {
     exec(`"${ADB_BIN}" -s ${serial} reboot`);
   } else if (type === 'expand_notifications' || type === 'notifications') {
