@@ -1028,7 +1028,7 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeUInt16BE(targetH, 20);
     buf.writeUInt16BE(normPressure, 22);
     buf.writeInt32BE(0, 24);              // action_button = 0
-    buf.writeInt32BE(action === 1 ? 0 : 1, 28); // buttons = 1 on DOWN/MOVE, 0 on UP
+    buf.writeInt32BE(0, 28);              // buttons = 0 (clean touchscreen finger event)
     try {
       this.controlSocket.write(buf);
       return true;

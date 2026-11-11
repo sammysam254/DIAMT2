@@ -171,23 +171,25 @@ function handleControl(type, data, serial, engine) {
     const ok = engine.sendTouchEvent(action, x, y, W, H, pressure);
 
     // If native scrcpy control is disconnected or unready, fallback to intelligent ADB swipe/tap
-    if (!ok && action === 1) {
+    if (action === 1) {
       const g = touchGestures.get(serial);
       touchGestures.delete(serial);
-      if (g) {
-        const dx = sx - g.startX;
-        const dy = sy - g.startY;
-        const dist = Math.hypot(dx, dy);
-        const dur = Math.max(60, Math.min(500, Date.now() - g.time));
-        if (dist > 25) {
-          adbInput(serial, `input swipe ${g.startX} ${g.startY} ${sx} ${sy} ${dur}`);
+      if (!ok) {
+        if (g) {
+          const dx = sx - g.startX;
+          const dy = sy - g.startY;
+          const dist = Math.hypot(dx, dy);
+          const dur = Math.max(60, Math.min(500, Date.now() - g.time));
+          if (dist > 25) {
+            adbInput(serial, `input swipe ${g.startX} ${g.startY} ${sx} ${sy} ${dur}`);
+          } else {
+            adbInput(serial, `input tap ${g.startX} ${g.startY}`);
+          }
         } else {
-          adbInput(serial, `input tap ${g.startX} ${g.startY}`);
+          adbInput(serial, `input tap ${sx} ${sy}`);
         }
-      } else {
-        adbInput(serial, `input tap ${sx} ${sy}`);
+        nudgeScreen();
       }
-      nudgeScreen();
     }
   } else if (type === 'tap') {
     const x = parseFloat(get(data, 'x')), y = parseFloat(get(data, 'y'));
@@ -1873,8 +1875,12 @@ function buildPlayerHtml(serial, screenW, screenH) {
       ws.send(JSON.stringify(ctrlQueue.shift()));
   }
   function send(data) {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify(data));
-    else {
+    if (ws && ws.readyState === 1) {
+      if (data.type === 'touch' && data.action === 2 && ws.bufferedAmount > 8192) {
+        return; // Drop intermediate move events on buffer congestion to eliminate rubber-banding latency
+      }
+      ws.send(JSON.stringify(data));
+    } else {
       if (data.type === 'touch' && data.action === 2) return; // drop stale moves
       ctrlQueue.push(data);
       if (ctrlQueue.length > 8) ctrlQueue.splice(0, ctrlQueue.length - 8);
@@ -1946,8 +1952,8 @@ function buildPlayerHtml(serial, screenW, screenH) {
     if (!isNativeTouchActive) return;
     e.preventDefault();
     const now = performance.now();
-    // 7ms micro-throttle allows up to ~140Hz touch sampling without socket congestion
-    if (now - lastMoveTime < 7) return;
+    // 10ms micro-throttle allows up to ~100Hz touch sampling without socket congestion
+    if (now - lastMoveTime < 10) return;
     const c = coords(e);
     if (Math.abs(c.x - lastX) < 1 && Math.abs(c.y - lastY) < 1) return;
     lastX = c.x; lastY = c.y;
@@ -1993,7 +1999,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     if (e.pointerType === 'touch' || isNativeTouchActive || !isPointerDown) return;
     e.preventDefault();
     const now = performance.now();
-    if (now - lastMoveTime < 7) return;
+    if (now - lastMoveTime < 10) return;
     const c = coords(e);
     if (Math.abs(c.x - lastX) < 1 && Math.abs(c.y - lastY) < 1) return;
     lastX = c.x; lastY = c.y;
