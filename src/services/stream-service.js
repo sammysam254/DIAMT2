@@ -142,18 +142,19 @@ function handleControl(type, data, serial, engine) {
     const y = parseFloat(get(data, 'y'));
     const pressure = (typeof data.pressure === 'number') ? data.pressure : (action === 1 ? 0 : 0.6);
     const ok = engine.sendTouchEvent(action, x, y, W, H, pressure);
-    if (!ok && action === 0) {
+    if (!ok && (action === 0 || action === 1)) {
       const sx = Math.round((x / W) * realW);
       const sy = Math.round((y / H) * realH);
       adbInput(serial, `input tap ${sx} ${sy}`);
     }
   } else if (type === 'tap') {
     const x = parseFloat(get(data, 'x')), y = parseFloat(get(data, 'y'));
+    let ok = false;
     if (ctrlOk()) {
-      engine.sendTouchEvent(0, x, y, W, H, 0.32);
-      const tapDuration = 75 + Math.floor(Math.random() * 35);
-      setTimeout(() => engine.sendTouchEvent(1, x, y, W, H, 0), tapDuration);
-    } else {
+      ok = engine.sendTouchEvent(0, x, y, W, H, 0.45);
+      setTimeout(() => engine.sendTouchEvent(1, x, y, W, H, 0), 65);
+    }
+    if (!ok) {
       const sx = Math.round((x / W) * realW);
       const sy = Math.round((y / H) * realH);
       adbInput(serial, `input tap ${sx} ${sy}`);
@@ -195,17 +196,21 @@ function handleControl(type, data, serial, engine) {
     }
   } else if (type === 'code' || type === 'key') {
     const code = parseInt(get(data, 'code'), 10);
+    let sent = false;
     if (ctrlOk()) {
-      engine.sendKeycode(0, code);
+      sent = engine.sendKeycode(0, code);
       setTimeout(() => engine.sendKeycode(1, code), 50);
-    } else {
+    }
+    if (!sent) {
       adbInput(serial, `input keyevent ${code}`);
     }
   } else if (type === 'text') {
     const text = get(data, 'text') || '';
+    let sent = false;
     if (ctrlOk()) {
-      engine.sendText(text);
-    } else {
+      sent = engine.sendText(text);
+    }
+    if (!sent) {
       const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
       adbInput(serial, `input text ${escaped}`);
     }
@@ -1847,7 +1852,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     const rectH = r.height || canvasH;
     
     // Prevent division by zero
-    if (rectW === 0 || rectH === 0) return { x: 0, y: 0, cx, cy };
+    if (rectW === 0 || rectH === 0) return { x: 0, y: 0, cx, cy, w: canvasW, h: canvasH };
     
     const x = Math.round((cx - r.left) * (canvasW / rectW));
     const y = Math.round((cy - r.top)  * (canvasH / rectH));
@@ -1855,7 +1860,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
     return {
       x: Math.max(0, Math.min(canvasW - 1, x)),
       y: Math.max(0, Math.min(canvasH - 1, y)),
-      cx, cy
+      cx, cy,
+      w: canvasW,
+      h: canvasH
     };
   }
 
@@ -1880,7 +1887,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     const c = coords(e);
     lastX = c.x; lastY = c.y;
     lastMoveTime = performance.now();
-    send({ type: 'touch', action: 0, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.5 });
+    send({ type: 'touch', action: 0, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.5 });
   }
 
   function handleTouchMove(e) {
@@ -1893,7 +1900,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     if (Math.abs(c.x - lastX) < 1 && Math.abs(c.y - lastY) < 1) return;
     lastX = c.x; lastY = c.y;
     lastMoveTime = now;
-    send({ type: 'touch', action: 2, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.6 });
+    send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.6 });
   }
 
   function handleTouchEnd(e) {
@@ -1902,9 +1909,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
     e.preventDefault();
     const c = coords(e);
     if (Math.abs(c.x - lastX) >= 1 || Math.abs(c.y - lastY) >= 1) {
-      send({ type: 'touch', action: 2, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.5 });
+      send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.5 });
     }
-    send({ type: 'touch', action: 1, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0 });
+    send({ type: 'touch', action: 1, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0 });
   }
 
   canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -1927,7 +1934,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     const c = coords(e);
     lastX = c.x; lastY = c.y;
     lastMoveTime = performance.now();
-    send({ type: 'touch', action: 0, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.5 });
+    send({ type: 'touch', action: 0, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.5 });
   });
 
   canvas.addEventListener('pointermove', (e) => {
@@ -1939,7 +1946,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     if (Math.abs(c.x - lastX) < 1 && Math.abs(c.y - lastY) < 1) return;
     lastX = c.x; lastY = c.y;
     lastMoveTime = now;
-    send({ type: 'touch', action: 2, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.6 });
+    send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.6 });
   });
 
   function releasePointer(e) {
@@ -1951,9 +1958,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
     }
     const c = coords(e);
     if (Math.abs(c.x - lastX) >= 1 || Math.abs(c.y - lastY) >= 1) {
-      send({ type: 'touch', action: 2, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0.5 });
+      send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.5 });
     }
-    send({ type: 'touch', action: 1, x: c.x, y: c.y, width: nativeW, height: nativeH, pressure: 0 });
+    send({ type: 'touch', action: 1, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0 });
   }
 
   canvas.addEventListener('pointerup', releasePointer);
@@ -2144,7 +2151,7 @@ async function startStreamServer(serial, port, aliasSerial) {
 
   // Start scrcpy engine asynchronously so stream server port listens immediately
   const engine = new ScrcpyEngine(serial);
-  engine.enableAudio = true;  // Stream Opus audio to remote browsers
+  engine.enableAudio = false;  // Keep audio disabled so socket #2 is guaranteed to be the control socket
   const videoPort = port + 1000;
   engine.start(videoPort)
     .then(() => logger.info(`[StreamServer] ScrcpyEngine ready for ${serial}`))

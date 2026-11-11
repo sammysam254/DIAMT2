@@ -225,7 +225,7 @@ class ScrcpyEngine extends EventEmitter {
     this.scrcpyVideoHeight = 0;
     this._jarPushed = false;
     this._screencapActive = false;
-    this.enableAudio = true;
+    this.enableAudio = false;
     this.audioSocket = null;
   }
 
@@ -436,9 +436,7 @@ class ScrcpyEngine extends EventEmitter {
       `CLASSPATH=${DEVICE_JAR_PATH}`,
       'app_process', '/', 'com.genymobile.scrcpy.Server', '2.4',
       'tunnel_forward=true',
-      'audio=' + (this.enableAudio ? 'true' : 'false'),
-      'audio_codec=opus',
-      'audio_bit_rate=64000',
+      'audio=false',
       'control=true',
       'cleanup=false',
       'send_dummy_byte=true',
@@ -614,38 +612,29 @@ class ScrcpyEngine extends EventEmitter {
     // Small additional buffer to ensure the ADB forward socket is fully open
     await new Promise(r => setTimeout(r, 200));
 
-    logger.info(`[ScrcpyEngine ${this.serial}] Connecting video socket...`);
+    logger.info(`[ScrcpyEngine ${this.serial}] Connecting video socket (socket 1)...`);
     // tunnel_forward socket 1 = video stream
     this.videoSocket = await this._connectOne(this.videoPort);
     this.videoSocket.setNoDelay(true);
     this._pipeVideoToClients(this.videoSocket);
 
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise(r => setTimeout(r, 100));
 
-    // tunnel_forward socket 2 = audio stream (when audio=true)
-    if (this.enableAudio) {
-      try {
-        logger.info(`[ScrcpyEngine ${this.serial}] Connecting audio socket...`);
-        this.audioSocket = await this._connectOne(this.videoPort);
-        this.audioSocket.setNoDelay(true);
-        this._pipeAudioToClients(this.audioSocket);
-        await new Promise(r => setTimeout(r, 150));
-      } catch (err) {
-        logger.warn(`[ScrcpyEngine ${this.serial}] Audio socket notice: ${err.message}`);
-      }
-    }
-
-    // tunnel_forward socket 3 = control socket
-    logger.info(`[ScrcpyEngine ${this.serial}] Connecting control socket...`);
+    // tunnel_forward socket 2 = control socket
+    logger.info(`[ScrcpyEngine ${this.serial}] Connecting control socket (socket 2)...`);
     this.controlSocket = await this._connectOne(this.videoPort);
     this.controlSocket.setNoDelay(true);
     this.controlSocket.setKeepAlive(true, 1000);
 
     this.controlSocket.on('close', () => {
+      logger.warn(`[ScrcpyEngine ${this.serial}] Control socket closed`);
       this.controlSocket = null;
       if (this.isRunning) setTimeout(() => this._reconnectControl(), 300);
     });
-    this.controlSocket.on('error', () => { this.controlSocket = null; });
+    this.controlSocket.on('error', (err) => {
+      logger.warn(`[ScrcpyEngine ${this.serial}] Control socket error: ${err.message}`);
+      this.controlSocket = null;
+    });
   }
 
   _connectOne(port, retries = 50) {
@@ -699,7 +688,21 @@ class ScrcpyEngine extends EventEmitter {
       // 1. Skip the device-info header exactly once & parse real video stream size
       if (!headerDone) {
         let headerLen = 0;
-        if (buf.length >= 77 && buf[0] === 0x00 && buf.toString('ascii', 1, 5) === 'h264') {
+        const hIdx = buf.indexOf(Buffer.from('h264'));
+        if (hIdx >= 0 && buf.length >= hIdx + 12) {
+          headerLen = hIdx + 12; // Scrcpy 2.4 header: dummy(1) + name(64) + 'h264'(4) + width(4) + height(4) = 77 bytes
+          try {
+            const w = buf.readUInt32BE(hIdx + 4);
+            const h = buf.readUInt32BE(hIdx + 8);
+            if (w > 0 && h > 0 && w < 10000 && h < 10000) {
+              this.scrcpyVideoWidth = w;
+              this.scrcpyVideoHeight = h;
+              this.videoWidth = w;
+              this.videoHeight = h;
+              logger.info(`[ScrcpyEngine ${this.serial}] Scrcpy stream resolution: ${w}x${h}`);
+            }
+          } catch (_) {}
+        } else if (buf.length >= 77 && buf[0] === 0x00) {
           headerLen = 77;
           try {
             const w = buf.readUInt32BE(69);
@@ -712,42 +715,13 @@ class ScrcpyEngine extends EventEmitter {
               logger.info(`[ScrcpyEngine ${this.serial}] Scrcpy stream resolution: ${w}x${h}`);
             }
           } catch (_) {}
-        } else if (buf.length >= 76 && buf.toString('ascii', 0, 4) === 'h264') {
-          headerLen = 76;
-          try {
-            const w = buf.readUInt32BE(68);
-            const h = buf.readUInt32BE(72);
-            if (w > 0 && h > 0 && w < 10000 && h < 10000) {
-              this.scrcpyVideoWidth = w;
-              this.scrcpyVideoHeight = h;
-              this.videoWidth = w;
-              this.videoHeight = h;
-              logger.info(`[ScrcpyEngine ${this.serial}] Scrcpy stream resolution: ${w}x${h}`);
-            }
-          } catch (_) {}
-        } else if (buf.length >= 1 && buf[0] === 0x00 && !buf.includes(Buffer.from('h264'))) {
-          headerLen = 1;
+        } else if (buf.length >= 1 && buf[0] === 0x00 && !buf.includes(Buffer.from('h264')) && buf.length < 77) {
+          return; // Wait for full header bytes
+        } else if (headerLen === 0 && buf.length >= 77) {
+          headerLen = 77;
         }
 
-        if (headerLen === 0) {
-          if (buf.length < 77) return; // Wait for full header bytes
-          const hIdx = buf.indexOf(Buffer.from('h264'));
-          if (hIdx >= 0 && buf.length >= hIdx + 76) {
-            headerLen = hIdx + 76;
-            try {
-              const w = buf.readUInt32BE(hIdx + 68);
-              const h = buf.readUInt32BE(hIdx + 72);
-              if (w > 0 && h > 0 && w < 10000 && h < 10000) {
-                this.scrcpyVideoWidth = w;
-                this.scrcpyVideoHeight = h;
-                this.videoWidth = w;
-                this.videoHeight = h;
-              }
-            } catch (_) {}
-          } else {
-            headerLen = 77;
-          }
-        }
+        if (headerLen === 0) return; // Wait until full header is available
 
         buf = buf.subarray(headerLen);
         headerDone = true;
@@ -1017,8 +991,8 @@ class ScrcpyEngine extends EventEmitter {
     let targetW = this.scrcpyVideoWidth || this.videoWidth;
     let targetH = this.scrcpyVideoHeight || this.videoHeight;
     if (!targetW || !targetH) {
-      targetW = this.screenWidth || 1080;
-      targetH = this.screenHeight || 2340;
+      targetW = (width > 10) ? Math.round(width) : (this.screenWidth || 1080);
+      targetH = (height > 10) ? Math.round(height) : (this.screenHeight || 2340);
     }
 
     const srcW = (width  > 10) ? width  : targetW;
@@ -1033,35 +1007,36 @@ class ScrcpyEngine extends EventEmitter {
 
     if (!this.controlSocket || this.controlSocket.destroyed) {
       if (action === 0 || action === 1) {
-        this._adb(['shell', 'input', 'tap', String(finalX), String(finalY)]).catch(() => {});
+        const physX = Math.round((finalX / targetW) * this.screenWidth);
+        const physY = Math.round((finalY / targetH) * this.screenHeight);
+        this._adb(['shell', 'input', 'tap', String(physX), String(physY)]).catch(() => {});
       }
       return false;
     }
 
-    // Natural human touch pressure simulation (0.24 - 0.38) instead of synthetic 1.0/65535
-    let normPressure = pressure;
-    if (action === 1) {
-      normPressure = 0;
-    } else if (normPressure >= 0.85 || normPressure <= 0.05) {
-      normPressure = 0.28 + ((finalX + finalY) % 7) * 0.015;
-    }
+    const normPressure = (action === 1) ? 0 : Math.min(0xffff, Math.max(1, Math.floor((pressure || 0.5) * 65535)));
 
     const buf = Buffer.allocUnsafe(32);
     buf.writeUInt8(2, 0);                 // INJECT_TOUCH_EVENT
     buf.writeUInt8(action, 1);            // 0=DOWN, 1=UP, 2=MOVE
-    buf.writeBigInt64BE(0n, 2);           // pointerId 0n (finger 0)
+    buf.writeBigInt64BE(-2n, 2);          // SC_POINTER_ID_GENERIC_FINGER (-2n)
     buf.writeInt32BE(finalX, 10);
     buf.writeInt32BE(finalY, 14);
     buf.writeUInt16BE(targetW, 18);
     buf.writeUInt16BE(targetH, 20);
-    buf.writeUInt16BE(action === 1 ? 0 : Math.floor(normPressure * 65535), 22);
+    buf.writeUInt16BE(normPressure, 22);
     buf.writeInt32BE(0, 24);              // action_button = 0
-    buf.writeInt32BE(0, 28);              // buttons: 0 for touchscreen finger (NEVER 1/BUTTON_PRIMARY mouse flag!)
+    buf.writeInt32BE(action === 1 ? 0 : 1, 28); // buttons = 1 on DOWN/MOVE, 0 on UP
     try {
       this.controlSocket.write(buf);
       return true;
     } catch (e) { 
       logger.warn(`[ScrcpyEngine ${this.serial}] touch write failed: ${e.message}`);
+      if (action === 0 || action === 1) {
+        const physX = Math.round((finalX / targetW) * this.screenWidth);
+        const physY = Math.round((finalY / targetH) * this.screenHeight);
+        this._adb(['shell', 'input', 'tap', String(physX), String(physY)]).catch(() => {});
+      }
       return false; 
     }
   }
@@ -1075,15 +1050,27 @@ class ScrcpyEngine extends EventEmitter {
    *   [10-13] metastate i32BE
    */
   sendKeycode(action, keycode, repeat = 0, metastate = 0) {
-    if (!this.controlSocket || this.controlSocket.destroyed) return false;
+    if (!this.controlSocket || this.controlSocket.destroyed) {
+      if (action === 0) {
+        this._adb(['shell', 'input', 'keyevent', String(keycode)]).catch(() => {});
+      }
+      return false;
+    }
     const buf = Buffer.allocUnsafe(14);
     buf.writeUInt8(0, 0);
     buf.writeUInt8(action, 1);
     buf.writeInt32BE(keycode, 2);
     buf.writeInt32BE(repeat, 6);
     buf.writeInt32BE(metastate, 10);
-    try { this.controlSocket.write(buf); return true; }
-    catch (_) { return false; }
+    try { 
+      this.controlSocket.write(buf); 
+      return true; 
+    } catch (_) {
+      if (action === 0) {
+        this._adb(['shell', 'input', 'keyevent', String(keycode)]).catch(() => {});
+      }
+      return false; 
+    }
   }
 
   /**
@@ -1093,14 +1080,24 @@ class ScrcpyEngine extends EventEmitter {
    *   [5...]  UTF-8 text
    */
   sendText(text) {
-    if (!this.controlSocket || this.controlSocket.destroyed) return false;
+    if (!this.controlSocket || this.controlSocket.destroyed) {
+      const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
+      this._adb(['shell', 'input', 'text', escaped]).catch(() => {});
+      return false;
+    }
     const tb = Buffer.from(text, 'utf-8');
     const buf = Buffer.allocUnsafe(5 + tb.length);
     buf.writeUInt8(1, 0);
     buf.writeInt32BE(tb.length, 1);
     tb.copy(buf, 5);
-    try { this.controlSocket.write(buf); return true; }
-    catch (_) { return false; }
+    try { 
+      this.controlSocket.write(buf); 
+      return true; 
+    } catch (_) {
+      const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
+      this._adb(['shell', 'input', 'text', escaped]).catch(() => {});
+      return false; 
+    }
   }
 
   // ── Reconnect / restart ───────────────────────────────────────────────────
