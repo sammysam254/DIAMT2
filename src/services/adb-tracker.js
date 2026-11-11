@@ -123,6 +123,19 @@ async function handleDeviceAdd(device) {
       deviceModel = props['ro.product.model'] || deviceModel;
       deviceBrand  = props['ro.product.brand']  || deviceBrand;
       realSerial = props['ro.serialno'] || serial;
+
+      // Fallback via direct getprop if properties are generic (e.g. tablets)
+      if (deviceModel === 'Android' || deviceBrand === 'Generic') {
+        try {
+          const adbBin = resolveAdb();
+          const { execSync } = require('child_process');
+          const m = execSync(`"${adbBin}" -s ${serial} shell getprop ro.product.model`, { timeout: 3000 }).toString().trim();
+          if (m) deviceModel = m;
+          const b = execSync(`"${adbBin}" -s ${serial} shell getprop ro.product.brand`, { timeout: 3000 }).toString().trim();
+          if (b) deviceBrand = b;
+        } catch (_) {}
+      }
+
       if (realSerial === serial && serial.includes(':')) {
         const ip = serial.split(':')[0];
         const IP_MAP = {

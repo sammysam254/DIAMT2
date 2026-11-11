@@ -234,23 +234,29 @@ class ScrcpyEngine extends EventEmitter {
   }
 
   /**
-   * Register a WS client. We immediately flush the cached SPS/PPS + IDR keyframe
-   * so the WebCodecs decoder is initialised before any new delta frame arrives.
+   * Register a WS client. We immediately send cached SPS/PPS + IDR keyframe
+   * and capture an instant live snapshot so the screen displays immediately with ZERO black screen.
    */
-  addClient(ws) {
+  async addClient(ws) {
     ws._needsKeyframe = false;
     this.wsClients.add(ws);
-    // Send cached SPS/PPS config & IDR keyframe immediately so WebCodecs decodes instantly
+
+    // 1. Send cached SPS/PPS config & IDR keyframe immediately if available
     const initialPacket = this._keyframeBuffer || this._configPacket;
     if (initialPacket && ws.readyState === 1) {
       try { ws.send(initialPacket, { binary: true }); } catch (_) {}
     }
-    // Nudge Android window compositor with WAKEUP (224) and MENU (82) to dismiss lockscreen and produce fresh frames
+
+    // 2. Deliver instant screen snapshot to guarantee NO black screen on connect (tablets & phones)
+    this.captureInstantFrame(ws);
+
+    // 3. Nudge Android window compositor with WAKEUP (224) and MENU (82) to dismiss lockscreen and produce fresh frames
     try {
       this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
       this._adb(['shell', 'input', 'keyevent', '82']).catch(() => {});
       this._adb(['shell', 'svc', 'power', 'stayon', 'true']).catch(() => {});
       this._adb(['shell', 'settings', 'put', 'system', 'screen_off_timeout', '2147483647']).catch(() => {});
+      this._adb(['shell', 'settings', 'put', 'global', 'stay_on_while_plugged_in', '3']).catch(() => {});
     } catch (_) {}
   }
 
@@ -258,13 +264,45 @@ class ScrcpyEngine extends EventEmitter {
     this.wsClients.delete(ws);
   }
 
+  async captureInstantFrame(targetWs = null) {
+    try {
+      const proc = spawn(ADB_BIN, ['-s', this.serial, 'exec-out', 'screencap', '-p'], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const chunks = [];
+      proc.stdout.on('data', c => chunks.push(c));
+      await new Promise(r => { proc.on('close', r); proc.on('error', r); });
+      if (chunks.length > 0) {
+        const png = Buffer.concat(chunks);
+        if (png.length > 100 && png[0] === 0x89 && png[1] === 0x50) {
+          if (targetWs && targetWs.readyState === 1) {
+            try { targetWs.send(png, { binary: true }); } catch (_) {}
+          } else {
+            for (const ws of this.wsClients) {
+              if (ws.readyState === 1) {
+                try { ws.send(png, { binary: true }); } catch (_) {}
+              }
+            }
+          }
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
   sendKeyframeToClient(ws) {
     if (!ws || ws.readyState !== 1) return;
     ws._needsKeyframe = false;
-    // Send SPS/PPS configuration packet so client decoder is prepared for incoming frames
-    const pkt = this._configPacket || this._keyframeBuffer;
+    // Prefer complete keyframe buffer (SPS+PPS+IDR) over standalone header config
+    const pkt = this._keyframeBuffer || this._configPacket;
     if (pkt) {
       try { ws.send(pkt, { binary: true }); } catch (_) {}
+    }
+    // Also deliver instant frame if video stream hasn't produced frames recently
+    if (!this._keyframeBuffer || Date.now() - this.lastDataTime > 2500) {
+      this.captureInstantFrame(ws);
     }
   }
 
@@ -311,22 +349,39 @@ class ScrcpyEngine extends EventEmitter {
 
       // Wake display and unlock using standard human device settings
       try {
-        await this._adb(['shell', 'settings', 'put', 'system', 'screen_off_timeout', '600000']).catch(() => {});
-        await this._adb(['shell', 'settings', 'put', 'global', 'stay_on_while_plugged_in', '0']).catch(() => {});
+        await this._adb(['shell', 'svc', 'power', 'stayon', 'true']).catch(() => {});
+        await this._adb(['shell', 'settings', 'put', 'system', 'screen_off_timeout', '2147483647']).catch(() => {});
+        await this._adb(['shell', 'settings', 'put', 'global', 'stay_on_while_plugged_in', '3']).catch(() => {});
         await this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {}); // KEYCODE_WAKEUP
-        await this._adb(['shell', 'input', 'keyevent', '82']).catch(() => {});  // KEYCODE_MENU
+        await this._adb(['shell', 'input', 'keyevent', '82']).catch(() => {});  // KEYCODE_MENU (unlocks screen)
       } catch (_) {}
 
-      // 1. Fetch real screen dimensions
+      // 1. Fetch real screen dimensions & orientation (tablets & phones of all aspect ratios)
       try {
         const out = await this._adb(['shell', 'wm', 'size']);
-        const m = out.match(/Physical size:\s*(\d+)x(\d+)/);
+        const override = out.match(/Override size:\s*(\d+)x(\d+)/i);
+        const physical = out.match(/Physical size:\s*(\d+)x(\d+)/i);
+        const m = override || physical;
         if (m) {
           this.screenWidth  = parseInt(m[1], 10);
           this.screenHeight = parseInt(m[2], 10);
         }
       } catch (_) {}
-      logger.info(`[ScrcpyEngine ${this.serial}] Screen: ${this.screenWidth}x${this.screenHeight}`);
+
+      // Detect tablet/device orientation to accommodate landscape or portrait screens
+      try {
+        const dispOut = await this._adb(['shell', 'dumpsys', 'display']);
+        const rotM = dispOut.match(/mCurrentOrientation=([0-3])/i) || dispOut.match(/mOrientation=([0-3])/i);
+        if (rotM) {
+          const rot = parseInt(rotM[1], 10);
+          if ((rot === 1 || rot === 3) && this.screenWidth < this.screenHeight) {
+            const tmp = this.screenWidth;
+            this.screenWidth = this.screenHeight;
+            this.screenHeight = tmp;
+          }
+        }
+      } catch (_) {}
+      logger.info(`[ScrcpyEngine ${this.serial}] Detected Screen Dimensions: ${this.screenWidth}x${this.screenHeight}`);
 
       // 2. Push scrcpy-server.jar to device
       await this._pushServerJar();
@@ -361,6 +416,21 @@ class ScrcpyEngine extends EventEmitter {
       logger.error(`[ScrcpyEngine ${this.serial}] Download from: https://github.com/Genymobile/scrcpy/releases/download/v2.4/scrcpy-server-v2.4`);
     }
 
+    // Dynamic resolution alignment: ensure max_size keeps dimensions divisible by 16 for all hardware encoders
+    let maxSizeArg = '1280';
+    if (this.screenWidth && this.screenHeight) {
+      const maxDim = Math.max(this.screenWidth, this.screenHeight);
+      const minDim = Math.min(this.screenWidth, this.screenHeight);
+      const aspect = minDim / maxDim;
+      for (const sz of [1280, 1024, 1152, 960, 800]) {
+        const scaledMin = Math.round(sz * aspect);
+        if (sz % 16 === 0 && scaledMin % 16 === 0) {
+          maxSizeArg = String(sz);
+          break;
+        }
+      }
+    }
+
     const args = [
       '-s', this.serial, 'shell',
       `CLASSPATH=${DEVICE_JAR_PATH}`,
@@ -373,10 +443,10 @@ class ScrcpyEngine extends EventEmitter {
       'cleanup=false',
       'send_dummy_byte=true',
       'video_source=display',
-      'video_bit_rate=5000000',
-      'max_size=1200',
+      'video_bit_rate=4500000',
+      `max_size=${maxSizeArg}`,
       'max_fps=60',
-      'video_codec_options=profile=1,i-frame-interval=1',
+      'video_codec_options=i-frame-interval=1',
       'send_frame_meta=true',
       'show_touches=false',
       'stay_awake=true',
@@ -605,9 +675,9 @@ class ScrcpyEngine extends EventEmitter {
 
     const watchdog = setInterval(() => {
       // 1. If device is idle and no new frames from scrcpy for >=3s while clients are watching,
-      // gently nudge the screen compositor via control socket so fresh frames are emitted when active.
-      // NOTE: Never re-broadcast stale cached IDR frames here — doing so causes clients to flash previous screens!
+      // capture an instant frame to guarantee continuous display and nudge the screen compositor.
       if (this.isRunning && this.wsClients.size > 0 && Date.now() - this.lastDataTime >= 3000) {
+        this.captureInstantFrame();
         if (this.controlSocket && !this.controlSocket.destroyed) {
           try {
             this.sendKeycode(0, 224); // KEYCODE_WAKEUP DOWN
@@ -620,7 +690,7 @@ class ScrcpyEngine extends EventEmitter {
         logger.warn(`[ScrcpyEngine ${this.serial}] Video socket disconnected — starting screenrecord fallback`);
         this._startScreenrecordFallback();
       }
-    }, 1500);
+    }, 2000);
 
     socket.on('data', (chunk) => {
       this.lastDataTime = Date.now();
@@ -628,45 +698,76 @@ class ScrcpyEngine extends EventEmitter {
 
       // 1. Skip the device-info header exactly once & parse real video stream size
       if (!headerDone) {
-        if (buf.length < DEVICE_HEADER_LEN) return;
-
-        try {
-          // scrcpy 2.4 video socket header layout (77 bytes total):
-          //   [0]      dummy byte (0x00)
-          //   [1-4]    codec ID ASCII ("h264")
-          //   [5-68]   device name, 64 bytes null-padded
-          //   [69-72]  uint32 BE — negotiated encoder width
-          //   [73-76]  uint32 BE — negotiated encoder height
-          const w = buf.readUInt32BE(69);
-          const h = buf.readUInt32BE(73);
-          if (w > 0 && h > 0 && w < 10000 && h < 10000) {
-            this.scrcpyVideoWidth = w;
-            this.scrcpyVideoHeight = h;
-            this.videoWidth = w;
-            this.videoHeight = h;
-            logger.info(`[ScrcpyEngine ${this.serial}] Scrcpy stream resolution: ${w}x${h}`);
-          }
-        } catch (_) {}
-
-        if (buf.length >= DEVICE_HEADER_LEN + META) {
-          const firstPktSize = buf.readUInt32BE(DEVICE_HEADER_LEN + 8);
-          if (firstPktSize === 0 || firstPktSize > 2 * 1024 * 1024) {
-            logger.warn(`[ScrcpyEngine ${this.serial}] Unexpected first packet size ${firstPktSize} — trying 1-byte header`);
-            buf = buf.subarray(1);
-          } else {
-            buf = buf.subarray(DEVICE_HEADER_LEN);
-          }
-        } else {
-          buf = buf.subarray(DEVICE_HEADER_LEN);
+        let headerLen = 0;
+        if (buf.length >= 77 && buf[0] === 0x00 && buf.toString('ascii', 1, 5) === 'h264') {
+          headerLen = 77;
+          try {
+            const w = buf.readUInt32BE(69);
+            const h = buf.readUInt32BE(73);
+            if (w > 0 && h > 0 && w < 10000 && h < 10000) {
+              this.scrcpyVideoWidth = w;
+              this.scrcpyVideoHeight = h;
+              this.videoWidth = w;
+              this.videoHeight = h;
+              logger.info(`[ScrcpyEngine ${this.serial}] Scrcpy stream resolution: ${w}x${h}`);
+            }
+          } catch (_) {}
+        } else if (buf.length >= 76 && buf.toString('ascii', 0, 4) === 'h264') {
+          headerLen = 76;
+          try {
+            const w = buf.readUInt32BE(68);
+            const h = buf.readUInt32BE(72);
+            if (w > 0 && h > 0 && w < 10000 && h < 10000) {
+              this.scrcpyVideoWidth = w;
+              this.scrcpyVideoHeight = h;
+              this.videoWidth = w;
+              this.videoHeight = h;
+              logger.info(`[ScrcpyEngine ${this.serial}] Scrcpy stream resolution: ${w}x${h}`);
+            }
+          } catch (_) {}
+        } else if (buf.length >= 1 && buf[0] === 0x00 && !buf.includes(Buffer.from('h264'))) {
+          headerLen = 1;
         }
 
-        logger.info(`[ScrcpyEngine ${this.serial}] Device-info header consumed, stream parsing started`);
+        if (headerLen === 0) {
+          if (buf.length < 77) return; // Wait for full header bytes
+          const hIdx = buf.indexOf(Buffer.from('h264'));
+          if (hIdx >= 0 && buf.length >= hIdx + 76) {
+            headerLen = hIdx + 76;
+            try {
+              const w = buf.readUInt32BE(hIdx + 68);
+              const h = buf.readUInt32BE(hIdx + 72);
+              if (w > 0 && h > 0 && w < 10000 && h < 10000) {
+                this.scrcpyVideoWidth = w;
+                this.scrcpyVideoHeight = h;
+                this.videoWidth = w;
+                this.videoHeight = h;
+              }
+            } catch (_) {}
+          } else {
+            headerLen = 77;
+          }
+        }
+
+        buf = buf.subarray(headerLen);
         headerDone = true;
+        logger.info(`[ScrcpyEngine ${this.serial}] Device-info header consumed (${headerLen} bytes), stream parsing started`);
       }
 
       // 2. Process video frame packets zero-copy
       while (buf.length >= META) {
         const pktSize = buf.readUInt32BE(8);
+        if (pktSize === 0 || pktSize > 5 * 1024 * 1024) {
+          // Framing recovery: seek to next NAL start code (0x00 0x00 0x01)
+          const nextStart = buf.indexOf(Buffer.from([0, 0, 1]));
+          if (nextStart >= 0) {
+            buf = buf.subarray(Math.max(0, nextStart - (nextStart >= 1 && buf[nextStart-1] === 0 ? 1 : 0)));
+          } else {
+            buf = Buffer.alloc(0);
+          }
+          break;
+        }
+
         if (buf.length < META + pktSize) break;
 
         const ptsHigh  = buf.readUInt32BE(0);
@@ -913,13 +1014,6 @@ class ScrcpyEngine extends EventEmitter {
    *   [28-31] buttons i32BE (1 on DOWN/MOVE, 0 on UP)
    */
   sendTouchEvent(action, x, y, width, height, pressure = 1.0) {
-    if (!this.controlSocket || this.controlSocket.destroyed) {
-      return false;
-    }
-
-    // Must use the exact resolution scrcpy-server expects in Controller.java:
-    // Controller.java: if (!position.getScreenSize().equals(device.getScreenInfo().getVideoSize())) reject
-    // The device header (bytes 69-76) provides this exact videoSize.
     let targetW = this.scrcpyVideoWidth || this.videoWidth;
     let targetH = this.scrcpyVideoHeight || this.videoHeight;
     if (!targetW || !targetH) {
@@ -936,6 +1030,13 @@ class ScrcpyEngine extends EventEmitter {
     // Clamp to valid range
     const finalX = Math.max(0, Math.min(targetW - 1, scaledX));
     const finalY = Math.max(0, Math.min(targetH - 1, scaledY));
+
+    if (!this.controlSocket || this.controlSocket.destroyed) {
+      if (action === 0 || action === 1) {
+        this._adb(['shell', 'input', 'tap', String(finalX), String(finalY)]).catch(() => {});
+      }
+      return false;
+    }
 
     // Natural human touch pressure simulation (0.24 - 0.38) instead of synthetic 1.0/65535
     let normPressure = pressure;

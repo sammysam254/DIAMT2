@@ -221,6 +221,9 @@ function handleControl(type, data, serial, engine) {
       } else {
         adbInput(serial, 'input keyevent 224');
       }
+      if (engine && typeof engine.captureInstantFrame === 'function' && (!engine._keyframeBuffer || Date.now() - engine.lastDataTime > 2500)) {
+        engine.captureInstantFrame();
+      }
     } catch (_) {}
   }
 }
@@ -1445,10 +1448,29 @@ function buildPlayerHtml(serial, screenW, screenH) {
     window.addEventListener(evt, initAudio, { passive: true });
   });
 
-  // ── WebCodecs H264 Decoder ───────────────────────────────────────────────
+  // ── WebCodecs H264 Decoder (Auto-adapts to phones, tablets, and any hardware profile) ──
   let decoder = null;
   let decoderReady = false;
   let hasKeyframe = false;
+  let activeCodec = 'avc1.42E02A';
+
+  function parseSpsCodec(u8) {
+    const limit = Math.min(u8.length - 4, 512);
+    for (let i = 0; i < limit; i++) {
+      if (u8[i] === 0 && u8[i+1] === 0) {
+        let start = -1;
+        if (u8[i+2] === 1 && (u8[i+3] & 0x1f) === 7) start = i + 4;
+        else if (u8[i+2] === 0 && u8[i+3] === 1 && (u8[i+4] & 0x1f) === 7) start = i + 5;
+        if (start >= 0 && start + 3 <= u8.length) {
+          const profile = u8[start].toString(16).padStart(2, '0');
+          const compat  = u8[start+1].toString(16).padStart(2, '0');
+          const level   = u8[start+2].toString(16).padStart(2, '0');
+          return 'avc1.' + profile + compat + level;
+        }
+      }
+    }
+    return null;
+  }
 
   function resetDecoder() {
     hasKeyframe = false;
@@ -1459,13 +1481,14 @@ function buildPlayerHtml(serial, screenW, screenH) {
     decoderReady = false;
   }
 
-  function initDecoder() {
+  function initDecoder(codecOverride) {
     resetDecoder();
     if (typeof VideoDecoder === 'undefined') {
       console.warn('[Stream] WebCodecs VideoDecoder not available in this browser');
       return false;
     }
     try {
+      const targetCodec = codecOverride || activeCodec || 'avc1.42E02A';
       decoder = new VideoDecoder({
         output: function(frame) {
           lastFrameReceivedTime = Date.now();
@@ -1474,6 +1497,8 @@ function buildPlayerHtml(serial, screenW, screenH) {
           if (w && h && (canvas.width !== w || canvas.height !== h)) {
             canvas.width = w; canvas.height = h; nativeW = w; nativeH = h;
             canvas.style.aspectRatio = w + ' / ' + h;
+            const dbgRes = document.getElementById('dbgRes');
+            if (dbgRes) dbgRes.textContent = w + ' x ' + h;
           }
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'high';
@@ -1484,19 +1509,23 @@ function buildPlayerHtml(serial, screenW, screenH) {
         error: function(err) {
           console.warn('[Stream] VideoDecoder error:', err);
           resetDecoder();
-          initDecoder();
+          initDecoder(activeCodec);
           send({ type: 'request_keyframe' });
+          send({ type: 'wake' });
         }
       });
       decoder.configure({
-        codec: 'avc1.42E02A',
+        codec: targetCodec,
         optimizeForLatency: true,
         hardwareAcceleration: 'prefer-hardware'
       });
       decoderReady = true;
+      activeCodec = targetCodec;
+      const dbgCodec = document.getElementById('dbgCodec');
+      if (dbgCodec) dbgCodec.textContent = targetCodec;
       return true;
     } catch (err) {
-      console.error('[Stream] Failed to init VideoDecoder:', err);
+      console.error('[Stream] Failed to init VideoDecoder with codec ' + (codecOverride || activeCodec) + ':', err);
       return false;
     }
   }
@@ -1695,8 +1724,28 @@ function buildPlayerHtml(serial, screenW, screenH) {
       }
 
       // 3. Raw H264 NAL stream via WebCodecs
+      // Auto-adapt decoder codec if incoming SPS specifies a different H264 profile/level
+      const spsCodec = parseSpsCodec(u8);
+      if (spsCodec && spsCodec !== activeCodec) {
+        console.log('[Stream] Adapting decoder to hardware stream profile: ' + spsCodec);
+        activeCodec = spsCodec;
+        if (decoder && decoder.state !== 'closed') {
+          try {
+            decoder.configure({
+              codec: spsCodec,
+              optimizeForLatency: true,
+              hardwareAcceleration: 'prefer-hardware'
+            });
+            const dbgCodec = document.getElementById('dbgCodec');
+            if (dbgCodec) dbgCodec.textContent = spsCodec;
+          } catch (_) {
+            initDecoder(spsCodec);
+          }
+        }
+      }
+
       if (!decoderReady || !decoder || decoder.state === 'closed') {
-        if (!initDecoder()) {
+        if (!initDecoder(activeCodec)) {
           startFallback();
           return;
         }
