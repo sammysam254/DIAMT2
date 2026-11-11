@@ -328,10 +328,12 @@ class ScrcpyEngine extends EventEmitter {
     try {
       await this._adb(['shell', 'rm', '-f', '/data/local/tmp/scrcpy-server.jar', '/data/local/tmp/scrcpy*.jar']).catch(() => {});
     } catch (_) {}
-    logger.info(`[ScrcpyEngine ${this.serial}] Deploying stealth framework engine to device...`);
-    await this._adb(['push', SCRCPY_JAR_PATH, DEVICE_JAR_PATH]);
+    logger.info(`[ScrcpyEngine ${this.serial}] Deploying scrcpy framework engine to device...`);
+    await this._adb(['push', SCRCPY_JAR_PATH, '/data/local/tmp/scrcpy-server.jar']);
+    await this._adb(['push', SCRCPY_JAR_PATH, DEVICE_JAR_PATH]).catch(() => {});
+    await this._adb(['shell', 'chmod', '755', '/data/local/tmp/scrcpy-server.jar', DEVICE_JAR_PATH]).catch(() => {});
     this._jarPushed = true;
-    logger.info(`[ScrcpyEngine ${this.serial}] Stealth engine deployed successfully`);
+    logger.info(`[ScrcpyEngine ${this.serial}] Engine deployed successfully`);
   }
 
   async start(videoPort) {
@@ -433,7 +435,7 @@ class ScrcpyEngine extends EventEmitter {
 
     const args = [
       '-s', this.serial, 'shell',
-      `CLASSPATH=${DEVICE_JAR_PATH}`,
+      `CLASSPATH=/data/local/tmp/scrcpy-server.jar:${DEVICE_JAR_PATH}`,
       'app_process', '/', 'com.genymobile.scrcpy.Server', '2.4',
       'tunnel_forward=true',
       'audio=false',

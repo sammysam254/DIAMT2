@@ -123,6 +123,8 @@ function captureOneFrame(serial) {
 
 // ─── Shared control dispatcher ────────────────────────────────────────────────
 
+const touchGestures = new Map();
+
 function get(data, key) {
   return typeof data.get === 'function' ? data.get(key) : data[key];
 }
@@ -136,16 +138,53 @@ function handleControl(type, data, serial, engine) {
 
   const ctrlOk = () => engine.controlSocket && !engine.controlSocket.destroyed;
 
+  const nudgeScreen = () => {
+    setTimeout(() => {
+      if (engine && typeof engine.captureInstantFrame === 'function') {
+        engine.captureInstantFrame();
+      }
+    }, 70);
+  };
+
   if (type === 'touch') {
     const action = parseInt(get(data, 'action'), 10);
     const x = parseFloat(get(data, 'x'));
     const y = parseFloat(get(data, 'y'));
     const pressure = (typeof data.pressure === 'number') ? data.pressure : (action === 1 ? 0 : 0.6);
+
+    const sx = Math.round((x / W) * realW);
+    const sy = Math.round((y / H) * realH);
+
+    // Track touch points for gesture / swipe calculation if falling back to ADB
+    if (action === 0) {
+      touchGestures.set(serial, { startX: sx, startY: sy, lastX: sx, lastY: sy, time: Date.now() });
+    } else if (action === 2) {
+      const g = touchGestures.get(serial);
+      if (g) { g.lastX = sx; g.lastY = sy; }
+    }
+
     const ok = engine.sendTouchEvent(action, x, y, W, H, pressure);
-    if (!ok && (action === 0 || action === 1)) {
-      const sx = Math.round((x / W) * realW);
-      const sy = Math.round((y / H) * realH);
-      adbInput(serial, `input tap ${sx} ${sy}`);
+
+    // If native scrcpy control is disconnected or unready, fallback to intelligent ADB swipe/tap
+    if (!ok && action === 1) {
+      const g = touchGestures.get(serial);
+      touchGestures.delete(serial);
+      if (g) {
+        const dx = sx - g.startX;
+        const dy = sy - g.startY;
+        const dist = Math.hypot(dx, dy);
+        const dur = Math.max(60, Math.min(500, Date.now() - g.time));
+        if (dist > 25) {
+          adbInput(serial, `input swipe ${g.startX} ${g.startY} ${sx} ${sy} ${dur}`);
+        } else {
+          adbInput(serial, `input tap ${g.startX} ${g.startY}`);
+        }
+      } else {
+        adbInput(serial, `input tap ${sx} ${sy}`);
+      }
+      nudgeScreen();
+    } else if (action === 1) {
+      nudgeScreen();
     }
   } else if (type === 'tap') {
     const x = parseFloat(get(data, 'x')), y = parseFloat(get(data, 'y'));
@@ -159,6 +198,7 @@ function handleControl(type, data, serial, engine) {
       const sy = Math.round((y / H) * realH);
       adbInput(serial, `input tap ${sx} ${sy}`);
     }
+    nudgeScreen();
   } else if (type === 'swipe') {
     const x1 = parseFloat(get(data, 'x1')), y1 = parseFloat(get(data, 'y1'));
     const x2 = parseFloat(get(data, 'x2')), y2 = parseFloat(get(data, 'y2'));
@@ -168,6 +208,7 @@ function handleControl(type, data, serial, engine) {
       const sx1 = Math.round((x1 / W) * realW), sy1 = Math.round((y1 / H) * realH);
       const sx2 = Math.round((x2 / W) * realW), sy2 = Math.round((y2 / H) * realH);
       adbInput(serial, `input swipe ${sx1} ${sy1} ${sx2} ${sy2} ${dur}`);
+      nudgeScreen();
       return;
     }
 
@@ -177,6 +218,7 @@ function handleControl(type, data, serial, engine) {
       const sx1 = Math.round((x1 / W) * realW), sy1 = Math.round((y1 / H) * realH);
       const sx2 = Math.round((x2 / W) * realW), sy2 = Math.round((y2 / H) * realH);
       adbInput(serial, `input swipe ${sx1} ${sy1} ${sx2} ${sy2} ${dur}`);
+      nudgeScreen();
       return;
     }
 
@@ -192,6 +234,7 @@ function handleControl(type, data, serial, engine) {
         const action = (i === steps) ? 1 : 2; // UP on final step
         const pVal = (action === 1) ? 0 : 0.6;
         engine.sendTouchEvent(action, currX, currY, W, H, pVal);
+        if (i === steps) nudgeScreen();
       }, Math.round(i * dt));
     }
   } else if (type === 'code' || type === 'key') {
@@ -204,6 +247,7 @@ function handleControl(type, data, serial, engine) {
     if (!sent) {
       adbInput(serial, `input keyevent ${code}`);
     }
+    nudgeScreen();
   } else if (type === 'text') {
     const text = get(data, 'text') || '';
     let sent = false;
@@ -214,19 +258,25 @@ function handleControl(type, data, serial, engine) {
       const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
       adbInput(serial, `input text ${escaped}`);
     }
+    nudgeScreen();
   } else if (type === 'reboot') {
     exec(`"${ADB_BIN}" -s ${serial} reboot`);
   } else if (type === 'expand_notifications' || type === 'notifications') {
     exec(`"${ADB_BIN}" -s ${serial} shell cmd statusbar expand`);
+    nudgeScreen();
   } else if (type === 'wake' || type === 'refresh' || type === 'request_keyframe') {
     try {
       if (engine && engine.controlSocket && !engine.controlSocket.destroyed) {
         engine.sendKeycode(0, 224);
         engine.sendKeycode(1, 224);
-      } else {
-        adbInput(serial, 'input keyevent 224');
+        engine.sendKeycode(0, 82);
+        engine.sendKeycode(1, 82);
       }
-      if (engine && typeof engine.captureInstantFrame === 'function' && (!engine._keyframeBuffer || Date.now() - engine.lastDataTime > 2500)) {
+      // Always ensure keyguard is dismissed and screen is awake via direct ADB
+      adbInput(serial, 'input keyevent 224');
+      adbInput(serial, 'input keyevent 82');
+      adbInput(serial, 'wm dismiss-keyguard');
+      if (engine && typeof engine.captureInstantFrame === 'function') {
         engine.captureInstantFrame();
       }
     } catch (_) {}
@@ -1949,9 +1999,11 @@ function buildPlayerHtml(serial, screenW, screenH) {
     send({ type: 'touch', action: 2, x: c.x, y: c.y, width: c.w, height: c.h, pressure: 0.6 });
   });
 
+  let lastReleaseTime = 0;
   function releasePointer(e) {
     if (e.pointerType === 'touch' || isNativeTouchActive || !isPointerDown) return;
     isPointerDown = false;
+    lastReleaseTime = performance.now();
     if (activePointerId !== null) {
       try { canvas.releasePointerCapture(activePointerId); } catch (_) {}
       activePointerId = null;
@@ -1966,6 +2018,12 @@ function buildPlayerHtml(serial, screenW, screenH) {
   canvas.addEventListener('pointerup', releasePointer);
   canvas.addEventListener('pointercancel', releasePointer);
   window.addEventListener('pointerup', releasePointer);
+
+  canvas.addEventListener('click', (e) => {
+    if (performance.now() - lastReleaseTime < 350) return;
+    const c = coords(e);
+    send({ type: 'tap', x: c.x, y: c.y, width: c.w, height: c.h });
+  });
 
   // ── Ultra-Smooth Continuous Wheel Scrolling (35ms Responsive Bucket) ───
   let wheelAccum = 0;
@@ -2240,6 +2298,19 @@ async function startStreamServer(serial, port, aliasSerial) {
       handleControl(url.searchParams.get('type'), url.searchParams, effectiveSerial, effectiveEngine);
       res.writeHead(200, {'Content-Type':'application/json'});
       res.end('{"status":"ok"}');
+      return;
+    }
+
+    // Trigger auto-sync / GitHub pull
+    if (p === '/sync' || p === '/api/system/sync') {
+      try {
+        const autoSync = require('./auto-sync-service');
+        if (autoSync && typeof autoSync.checkAndSyncGithub === 'function') {
+          autoSync.checkAndSyncGithub().catch(() => {});
+        }
+      } catch (_) {}
+      res.writeHead(200, {'Content-Type':'application/json'});
+      res.end('{"status":"ok","message":"Sync initiated"}');
       return;
     }
 
