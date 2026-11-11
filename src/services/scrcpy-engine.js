@@ -119,7 +119,19 @@ function parseSpsWidth(payload) {
     bit++; // gaps_in_frame_num_value_allowed_flag
     r = _readUEGolomb(payload, bit); bit = r.bitOffset; // pic_width_in_mbs_minus1
     const widthInMbs = r.val + 1;
-    return Math.max(16, widthInMbs * 16);
+    let width = widthInMbs * 16;
+    
+    // Parse height & cropping flags to extract frame_crop_left_offset & frame_crop_right_offset if present
+    r = _readUEGolomb(payload, bit); bit = r.bitOffset; // pic_height_in_map_units_minus1
+    bit++; // frame_mbs_only_flag
+    bit++; // direct_8x8_inference_flag
+    const frameCroppingFlag = (payload[bit >> 3] >> (7 - (bit & 7))) & 1; bit++;
+    if (frameCroppingFlag && bit < payload.length * 8) {
+      const cropLeft = _readUEGolomb(payload, bit); bit = cropLeft.bitOffset;
+      const cropRight = _readUEGolomb(payload, bit); bit = cropRight.bitOffset;
+      width -= (cropLeft.val + cropRight.val) * 2;
+    }
+    return Math.max(16, width);
   } catch (err) {
     return 0;
   }
@@ -172,12 +184,12 @@ function parseSpsHeight(payload) {
     // Parse frame cropping if present
     bit++; // direct_8x8_inference_flag
     const frameCroppingFlag = (payload[bit >> 3] >> (7 - (bit & 7))) & 1; bit++;
-    if (frameCroppingFlag && start + 30 < payload.length) {
-      r = _readUEGolomb(payload, bit); bit = r.bitOffset; // crop_left
-      r = _readUEGolomb(payload, bit); bit = r.bitOffset; // crop_right
-      r = _readUEGolomb(payload, bit); bit = r.bitOffset; // crop_top
-      const cropBottom = r.val; r = _readUEGolomb(payload, bit); bit = r.bitOffset;
-      height -= (cropBottom + r.val) * (frameMbsOnly ? 2 : 4);
+    if (frameCroppingFlag && bit < payload.length * 8) {
+      const cropLeft = _readUEGolomb(payload, bit); bit = cropLeft.bitOffset;
+      const cropRight = _readUEGolomb(payload, bit); bit = cropRight.bitOffset;
+      const cropTop = _readUEGolomb(payload, bit); bit = cropTop.bitOffset;
+      const cropBottom = _readUEGolomb(payload, bit); bit = cropBottom.bitOffset;
+      height -= (cropTop.val + cropBottom.val) * (frameMbsOnly ? 2 : 4);
     }
     return Math.max(16, height);
   } catch (err) {
@@ -246,18 +258,15 @@ class ScrcpyEngine extends EventEmitter {
     const initialPacket = this._keyframeBuffer || this._configPacket;
     if (initialPacket && ws.readyState === 1) {
       try { ws.send(initialPacket, { binary: true }); } catch (_) {}
+    } else {
+      // 2. Deliver instant screen snapshot ONLY if no video keyframe is available yet
+      this.captureInstantFrame(ws);
     }
 
-    // 2. Deliver instant screen snapshot to guarantee NO black screen on connect (tablets & phones)
-    this.captureInstantFrame(ws);
-
-    // 3. Nudge Android window compositor with WAKEUP (224) and MENU (82) to dismiss lockscreen and produce fresh frames
+    // 3. Ensure device stays awake without sending disruptive menu keycodes
     try {
       this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
-      this._adb(['shell', 'input', 'keyevent', '82']).catch(() => {});
       this._adb(['shell', 'svc', 'power', 'stayon', 'true']).catch(() => {});
-      this._adb(['shell', 'settings', 'put', 'system', 'screen_off_timeout', '2147483647']).catch(() => {});
-      this._adb(['shell', 'settings', 'put', 'global', 'stay_on_while_plugged_in', '3']).catch(() => {});
     } catch (_) {}
   }
 
@@ -739,18 +748,12 @@ class ScrcpyEngine extends EventEmitter {
     const META = 12; // 8-byte PTS + 4-byte size
 
     const watchdog = setInterval(() => {
-      // 1. If device is idle and no new frames from scrcpy for >=3s while clients are watching,
-      // capture an instant frame to guarantee continuous display and nudge the screen compositor.
-      if (this.isRunning && this.wsClients.size > 0 && Date.now() - this.lastDataTime >= 3000) {
+      // Only capture instant screencap if video socket is NOT connected or active,
+      // avoiding injecting disruptive PNG frames and waking screen while H.264 pipeline is alive.
+      if ((!this.videoSocket || this.videoSocket.destroyed) && this.isRunning && this.wsClients.size > 0) {
         this.captureInstantFrame();
-        if (this.controlSocket && !this.controlSocket.destroyed) {
-          try {
-            this.sendKeycode(0, 224); // KEYCODE_WAKEUP DOWN
-            this.sendKeycode(1, 224); // KEYCODE_WAKEUP UP
-          } catch (_) {}
-        }
       }
-      // 2. Only trigger fallback if video socket is destroyed or disconnected
+      // Only trigger fallback if video socket is destroyed or disconnected
       if ((!this.videoSocket || this.videoSocket.destroyed) && !this._fallbackActive && this.isRunning) {
         logger.warn(`[ScrcpyEngine ${this.serial}] Video socket disconnected — starting screenrecord fallback`);
         this._startScreenrecordFallback();
@@ -841,21 +844,32 @@ class ScrcpyEngine extends EventEmitter {
               const prevW = this.scrcpyVideoWidth;
               const prevH = this.scrcpyVideoHeight;
 
-              // Check if resolution or orientation changed (e.g. phone/tablet rotation via 3rd party apps)
-              const hasChanged = (!prevW || !prevH || prevW !== spsW || prevH !== spsH);
+              // Check if resolution or orientation genuinely changed.
+              // Ignore micro-differences (<= 32px) like macroblock padding (e.g. 1604 vs 1616).
+              const isOrientationFlip = prevW && prevH && ((prevW > prevH) !== (spsW > spsH));
+              const isMajorDiff = prevW && prevH && (Math.abs(prevW - spsW) > 32 || Math.abs(prevH - spsH) > 32);
+              const hasChanged = (!prevW || !prevH || isOrientationFlip || isMajorDiff);
               if (hasChanged) {
-                this.scrcpyVideoWidth = spsW;
-                this.scrcpyVideoHeight = spsH;
-                this.videoWidth  = spsW;
-                this.videoHeight = spsH;
+                let newW = spsW;
+                let newH = spsH;
+                if (isOrientationFlip && prevW && prevH) {
+                  if (Math.abs(spsW - prevH) <= 32 && Math.abs(spsH - prevW) <= 32) {
+                    newW = prevH;
+                    newH = prevW;
+                  }
+                }
+                this.scrcpyVideoWidth = newW;
+                this.scrcpyVideoHeight = newH;
+                this.videoWidth  = newW;
+                this.videoHeight = newH;
                 this._keyframeBuffer = null; // Clear old orientation keyframe cache
-                logger.info(`[ScrcpyEngine ${this.serial}] Active video resolution: ${spsW}x${spsH} (prev: ${prevW}x${prevH})`);
+                logger.info(`[ScrcpyEngine ${this.serial}] Active video resolution updated: ${newW}x${newH} (prev: ${prevW}x${prevH})`);
 
                 // Broadcast resolution change to all connected WebSocket clients
                 const changeMsg = Buffer.from(JSON.stringify({
                   type: 'resolution_change',
-                  width: spsW,
-                  height: spsH,
+                  width: newW,
+                  height: newH,
                 }));
                 for (const ws of this.wsClients) {
                   if (ws.readyState === 1) {

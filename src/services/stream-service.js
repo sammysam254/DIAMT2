@@ -270,18 +270,25 @@ function handleControl(type, data, serial, engine) {
     nudgeScreen();
   } else if (type === 'wake' || type === 'refresh' || type === 'request_keyframe') {
     try {
-      if (engine && engine.controlSocket && !engine.controlSocket.destroyed) {
-        engine.sendKeycode(0, 224);
-        engine.sendKeycode(1, 224);
-        engine.sendKeycode(0, 82);
-        engine.sendKeycode(1, 82);
+      if (type === 'request_keyframe') {
+        if (engine && typeof engine.sendKeyframeToClient === 'function' && data._clientWs) {
+          engine.sendKeyframeToClient(data._clientWs);
+        } else if (engine && engine._keyframeBuffer) {
+          for (const ws of engine.wsClients) {
+            if (ws.readyState === 1) {
+              try { ws.send(engine._keyframeBuffer, { binary: true }); } catch (_) {}
+            }
+          }
+        }
       }
-      // Always ensure keyguard is dismissed and screen is awake via direct ADB
-      adbInput(serial, 'input keyevent 224');
-      adbInput(serial, 'input keyevent 82');
-      adbInput(serial, 'wm dismiss-keyguard');
-      if (engine && typeof engine.captureInstantFrame === 'function') {
-        engine.captureInstantFrame();
+      if (type === 'wake' || type === 'refresh') {
+        if (engine && engine.controlSocket && !engine.controlSocket.destroyed) {
+          engine.sendKeycode(0, 224); // KEYCODE_WAKEUP DOWN
+          engine.sendKeycode(1, 224); // KEYCODE_WAKEUP UP
+        } else {
+          adbInput(serial, 'input keyevent 224');
+          adbInput(serial, 'wm dismiss-keyguard');
+        }
       }
     } catch (_) {}
   }
@@ -1317,7 +1324,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     const f = pendingFrame; pendingFrame = null;
     const w = f.displayWidth  || f.codedWidth  || f.width;
     const h = f.displayHeight || f.codedHeight || f.height;
-    if (w && h && (canvas.width !== w || canvas.height !== h)) {
+    if (w && h && (Math.abs(canvas.width - w) > 8 || Math.abs(canvas.height - h) > 8)) {
       canvas.width = w; canvas.height = h; nativeW = w; nativeH = h;
       canvas.style.aspectRatio = w + ' / ' + h;
       console.log('[Canvas] Resized to ' + w + 'x' + h);
@@ -1553,7 +1560,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
           lastFrameReceivedTime = Date.now();
           const w = frame.displayWidth  || frame.codedWidth  || frame.width;
           const h = frame.displayHeight || frame.codedHeight || frame.height;
-          if (w && h && (canvas.width !== w || canvas.height !== h)) {
+          if (w && h && (Math.abs(canvas.width - w) > 8 || Math.abs(canvas.height - h) > 8)) {
             canvas.width = w; canvas.height = h; nativeW = w; nativeH = h;
             canvas.style.aspectRatio = w + ' / ' + h;
             const dbgRes = document.getElementById('dbgRes');
@@ -1701,30 +1708,28 @@ function buildPlayerHtml(serial, screenW, screenH) {
             return;
           }
           if (msg.type === 'resolution_change') {
-            console.log('[Stream] Dynamic orientation/resolution update: ' + msg.width + 'x' + msg.height);
-            nativeW = msg.width;
-            nativeH = msg.height;
-            canvas.width = msg.width;
-            canvas.height = msg.height;
-            canvas.style.aspectRatio = msg.width + ' / ' + msg.height;
-            hasKeyframe = false;
-            // Cleanly reconfigure or reset decoder for the new dimensions
-            if (decoder && decoder.state !== 'closed') {
-              try {
-                decoder.configure({
-                  codec: 'avc1.42E02A',
-                  optimizeForLatency: true,
-                  hardwareAcceleration: 'prefer-hardware'
-                });
-              } catch (_) {
-                resetDecoder();
-                initDecoder();
+            const isFlip = nativeW && nativeH && ((nativeW > nativeH) !== (msg.width > msg.height));
+            const isDiff = Math.abs((canvas.width || nativeW) - msg.width) > 16 || Math.abs((canvas.height || nativeH) - msg.height) > 16;
+            if (isFlip || isDiff) {
+              console.log('[Stream] Dynamic orientation/resolution update: ' + msg.width + 'x' + msg.height);
+              nativeW = msg.width;
+              nativeH = msg.height;
+              canvas.width = msg.width;
+              canvas.height = msg.height;
+              canvas.style.aspectRatio = msg.width + ' / ' + msg.height;
+              // Cleanly reconfigure decoder for the new dimensions without forcing codec down to baseline
+              if (decoder && decoder.state !== 'closed') {
+                try {
+                  decoder.configure({
+                    codec: activeCodec || 'avc1.42E02A',
+                    optimizeForLatency: true,
+                    hardwareAcceleration: 'prefer-hardware'
+                  });
+                } catch (_) {}
               }
+              const dbgRes = document.getElementById('dbgRes');
+              if (dbgRes) dbgRes.textContent = msg.width + ' x ' + msg.height;
             }
-            const dbgRes = document.getElementById('dbgRes');
-            if (dbgRes) dbgRes.textContent = msg.width + ' x ' + msg.height;
-            send({ type: 'request_keyframe' });
-            send({ type: 'wake' });
             return;
           } else if (msg.type === 'stream_reset') {
             console.log('[Stream] Server stream reset — reinitialising decoder');
