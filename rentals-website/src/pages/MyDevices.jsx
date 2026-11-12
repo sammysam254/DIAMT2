@@ -73,6 +73,7 @@ export default function MyDevices() {
         try {
           const u = new URL(streamUrl);
           u.searchParams.set('pin', unlockModal.access_password.trim());
+          u.searchParams.delete('muted');
           streamUrl = u.toString();
         } catch (_) {
           streamUrl = streamUrl.replace(/([?&])pin=[^&]*/g, '$1');

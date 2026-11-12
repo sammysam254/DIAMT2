@@ -1334,195 +1334,346 @@ function buildPlayerHtml(serial, screenW, screenH) {
     countFrame();
   }
 
-  // ── Audio — WebCodecs AudioDecoder (Opus) with raw PCM fallback ────────────
+  // ── Audio Engine — WebCodecs (Opus / AAC) + Safe Raw PCM Fallback with Jitter Buffer ────
   let audioCtx = null;
-  let audioDecoder = null;
-  let audioDecoderReady = false;
+  let gainNode = null;
+  let opusDecoder = null;
+  let opusDecoderReady = false;
+  let opusConfig = null;
+  let aacDecoder = null;
+  let aacDecoderReady = false;
+  let aacConfig = null;
   let audioNextPlayTime = 0;
   const urlParams = new URLSearchParams(window.location.search);
   let isMuted = urlParams.get('muted') === '1' || urlParams.get('muted') === 'true';
-  let gainNode = null;
+  let currentVolume = 100;
 
   function initAudio() {
     if (audioCtx) {
-      if (audioCtx.state === 'suspended') audioCtx.resume().catch(function() {});
+      if (audioCtx.state === 'suspended') audioCtx.resume().then(hideAudioResumePrompt).catch(function() {});
       return;
     }
     try {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000, latencyHint: 'interactive' });
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      audioCtx = new AudioCtx({ sampleRate: 48000, latencyHint: 'interactive' });
       gainNode = audioCtx.createGain();
-      gainNode.gain.value = isMuted ? 0 : 1;
+      gainNode.gain.value = isMuted ? 0 : (currentVolume / 100);
       gainNode.connect(audioCtx.destination);
-      if (audioCtx.state === 'suspended') audioCtx.resume().catch(function() {});
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().then(hideAudioResumePrompt).catch(function() {});
+      }
     } catch (_) {}
   }
 
-  function initOpusDecoder() {
-    if (audioDecoderReady) return true;
+  // Jitter buffer lead time for smooth, gap-free, stutter-free continuous streaming
+  const JITTER_BUFFER = 0.06; // 60ms lead time target
+  const MAX_DRIFT     = 0.30; // 300ms max allowed queue drift before soft resync
+
+  function scheduleAudioBuffer(audioBuf) {
+    if (!audioCtx || !gainNode || isMuted) return;
+    try {
+      const src = audioCtx.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(gainNode);
+
+      const now = audioCtx.currentTime;
+      if (audioNextPlayTime < now + 0.01) {
+        // Queue underrun or starting fresh: prime lead time
+        audioNextPlayTime = now + JITTER_BUFFER;
+      } else if (audioNextPlayTime > now + MAX_DRIFT) {
+        // Excessive latency drift: gently catch up to lead time
+        audioNextPlayTime = now + JITTER_BUFFER;
+      }
+
+      src.start(audioNextPlayTime);
+      audioNextPlayTime += audioBuf.duration;
+      hideAudioResumePrompt();
+    } catch (e) {
+      console.warn('[Audio] playback error:', e);
+    }
+  }
+
+  function audioDataToBuffer(audioData) {
+    try {
+      const nCh     = audioData.numberOfChannels;
+      const nFrames = audioData.numberOfFrames;
+      const sr      = audioData.sampleRate;
+      const webAudioBuf = audioCtx.createBuffer(nCh, nFrames, sr);
+
+      let isPlanar = false;
+      if (nCh > 1) {
+        try {
+          audioData.allocationSize({ planeIndex: 1, format: 'f32-planar' });
+          isPlanar = true;
+        } catch (_) {
+          isPlanar = false;
+        }
+      }
+
+      if (isPlanar) {
+        for (let ch = 0; ch < nCh; ch++) {
+          const byteLen = audioData.allocationSize({ planeIndex: ch, format: 'f32-planar' });
+          const plane = new Float32Array(byteLen / 4);
+          audioData.copyTo(plane, { planeIndex: ch, format: 'f32-planar' });
+          webAudioBuf.copyToChannel(plane, ch);
+        }
+      } else {
+        const byteLen = audioData.allocationSize({ planeIndex: 0, format: 'f32' });
+        const interleaved = new Float32Array(byteLen / 4);
+        audioData.copyTo(interleaved, { planeIndex: 0, format: 'f32' });
+        for (let ch = 0; ch < nCh; ch++) {
+          const chData = webAudioBuf.getChannelData(ch);
+          for (let i = 0; i < nFrames; i++) chData[i] = interleaved[i * nCh + ch];
+        }
+      }
+      return webAudioBuf;
+    } finally {
+      try { audioData.close(); } catch (_) {}
+    }
+  }
+
+  function initOpusDecoder(description) {
     if (typeof AudioDecoder === 'undefined') return false;
     try {
-      let layoutDetected = false;
-      let isPlanar = false;
-
-      audioDecoder = new AudioDecoder({
+      if (opusDecoder && opusDecoder.state !== 'closed') {
+        try { opusDecoder.close(); } catch (_) {}
+      }
+      opusDecoder = new AudioDecoder({
         output: function(audioData) {
-          if (!audioCtx || !gainNode) { audioData.close(); return; }
-          try {
-            const nCh     = audioData.numberOfChannels;
-            const nFrames = audioData.numberOfFrames;
-            const sr      = audioData.sampleRate;
-
-            // Detect planar vs interleaved once and cache it
-            if (!layoutDetected) {
-              if (nCh > 1) {
-                try { audioData.allocationSize({ planeIndex: 1, format: 'f32-planar' }); isPlanar = true; }
-                catch (_) { isPlanar = false; }
-              } else {
-                isPlanar = true;
-              }
-              layoutDetected = true;
-            }
-
-            const webAudioBuf = audioCtx.createBuffer(nCh, nFrames, sr);
-
-            if (isPlanar) {
-              for (let ch = 0; ch < nCh; ch++) {
-                const byteLen = audioData.allocationSize({ planeIndex: ch, format: 'f32-planar' });
-                const plane   = new Float32Array(byteLen / 4);
-                audioData.copyTo(plane, { planeIndex: ch, format: 'f32-planar' });
-                webAudioBuf.copyToChannel(plane, ch);
-              }
-            } else {
-              const byteLen    = audioData.allocationSize({ planeIndex: 0, format: 'f32' });
-              const interleaved = new Float32Array(byteLen / 4);
-              audioData.copyTo(interleaved, { planeIndex: 0, format: 'f32' });
-              for (let ch = 0; ch < nCh; ch++) {
-                const chData = webAudioBuf.getChannelData(ch);
-                for (let i = 0; i < nFrames; i++) chData[i] = interleaved[i * nCh + ch];
-              }
-            }
-
-            audioData.close();
-
-            const src = audioCtx.createBufferSource();
-            src.buffer = webAudioBuf;
-            src.connect(gainNode);
-
-            const now = audioCtx.currentTime;
-            if (audioNextPlayTime < now) audioNextPlayTime = now;
-            if (audioNextPlayTime > now + 0.1) audioNextPlayTime = now; // Clamp max audio latency drift
-            src.start(audioNextPlayTime);
-            audioNextPlayTime += webAudioBuf.duration;
-          } catch (err) {
-            console.warn('[Audio] output error:', err);
+          if (!audioCtx || !gainNode || isMuted) {
             try { audioData.close(); } catch (_) {}
+            return;
           }
+          const buf = audioDataToBuffer(audioData);
+          if (buf) scheduleAudioBuffer(buf);
         },
         error: function(err) {
-          console.warn('[Audio] AudioDecoder error:', err);
-          audioDecoderReady = false;
-          audioDecoder = null;
-          layoutDetected = false;
+          console.warn('[Audio] Opus decoder error:', err);
+          opusDecoderReady = false;
         }
       });
-      audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
-      audioDecoderReady = true;
+      const cfg = { codec: 'opus', sampleRate: 48000, numberOfChannels: 2 };
+      if (description && description.byteLength > 0) cfg.description = description;
+      opusDecoder.configure(cfg);
+      opusDecoderReady = true;
       return true;
     } catch (err) {
-      console.warn('[Audio] AudioDecoder init failed:', err);
+      console.warn('[Audio] Opus init failed:', err);
+      opusDecoderReady = false;
       return false;
     }
   }
 
-  function playOpusPacket(bytes) {
+  function playOpusPacket(bytes, isConfig) {
     if (isMuted) return;
     if (!audioCtx) initAudio();
     if (!audioCtx) return;
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().catch(function() {});
+      showAudioResumePrompt();
     }
-    if (!audioDecoderReady) {
-      if (!initOpusDecoder()) return;
+
+    // Check if packet is Opus identification header (OpusHead)
+    const isOpusHead = (bytes.length >= 8 && bytes[0] === 0x4F && bytes[1] === 0x70 && bytes[2] === 0x75 && bytes[3] === 0x73 && bytes[4] === 0x48);
+    if (isConfig || isOpusHead) {
+      opusConfig = bytes;
+      initOpusDecoder(opusConfig);
+      return;
     }
-    if (!audioDecoder || audioDecoder.state === 'closed') { audioDecoderReady = false; return; }
+
+    if (!opusDecoderReady || !opusDecoder || opusDecoder.state === 'closed') {
+      if (!initOpusDecoder(opusConfig)) return;
+    }
+
     try {
-      audioDecoder.decode(new EncodedAudioChunk({
+      opusDecoder.decode(new EncodedAudioChunk({
         type: 'key',
         timestamp: performance.now() * 1000,
         data: bytes
       }));
     } catch (err) {
       console.warn('[Audio] Opus decode error:', err);
-      audioDecoderReady = false;
-      audioDecoder = null;
+      opusDecoderReady = false;
+    }
+  }
+
+  function initAacDecoder(description) {
+    if (typeof AudioDecoder === 'undefined') return false;
+    try {
+      if (aacDecoder && aacDecoder.state !== 'closed') {
+        try { aacDecoder.close(); } catch (_) {}
+      }
+      aacDecoder = new AudioDecoder({
+        output: function(audioData) {
+          if (!audioCtx || !gainNode || isMuted) {
+            try { audioData.close(); } catch (_) {}
+            return;
+          }
+          const buf = audioDataToBuffer(audioData);
+          if (buf) scheduleAudioBuffer(buf);
+        },
+        error: function(err) {
+          console.warn('[Audio] AAC decoder error:', err);
+          aacDecoderReady = false;
+        }
+      });
+      const cfg = { codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: 2 };
+      if (description && description.byteLength > 0) cfg.description = description;
+      aacDecoder.configure(cfg);
+      aacDecoderReady = true;
+      return true;
+    } catch (err) {
+      console.warn('[Audio] AAC init failed:', err);
+      aacDecoderReady = false;
+      return false;
+    }
+  }
+
+  function playAacPacket(bytes, isConfig) {
+    if (isMuted) return;
+    if (!audioCtx) initAudio();
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(function() {});
+      showAudioResumePrompt();
+    }
+
+    if (isConfig) {
+      aacConfig = bytes;
+      initAacDecoder(aacConfig);
+      return;
+    }
+
+    if (!aacDecoderReady || !aacDecoder || aacDecoder.state === 'closed') {
+      if (!initAacDecoder(aacConfig)) return;
+    }
+
+    try {
+      aacDecoder.decode(new EncodedAudioChunk({
+        type: 'key',
+        timestamp: performance.now() * 1000,
+        data: bytes
+      }));
+    } catch (err) {
+      console.warn('[Audio] AAC decode error:', err);
+      aacDecoderReady = false;
     }
   }
 
   function playRawPcm(bytes) {
-    // Fallback: raw signed 16-bit LE stereo 48kHz PCM
     if (isMuted) return;
     if (!audioCtx) initAudio();
     if (!audioCtx || !gainNode) return;
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().catch(function() {});
+      showAudioResumePrompt();
     }
     try {
-      const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
-      const sampleCount = Math.floor(int16.length / 2);
+      // Raw 16-bit signed LE stereo 48kHz PCM
+      // 2 channels * 2 bytes = 4 bytes per sample
+      const sampleCount = Math.floor(bytes.byteLength / 4);
       if (sampleCount <= 0) return;
-      const buf = audioCtx.createBuffer(2, sampleCount, 48000);
-      const L = buf.getChannelData(0), R = buf.getChannelData(1);
+
+      const webAudioBuf = audioCtx.createBuffer(2, sampleCount, 48000);
+      const L = webAudioBuf.getChannelData(0);
+      const R = webAudioBuf.getChannelData(1);
+
+      // Safe DataView access eliminates any TypedArray alignment issues
+      const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 4);
       for (let i = 0; i < sampleCount; i++) {
-        L[i] = int16[i * 2]     / 32768.0;
-        R[i] = int16[i * 2 + 1] / 32768.0;
+        L[i] = view.getInt16(i * 4, true) / 32768.0;
+        R[i] = view.getInt16(i * 4 + 2, true) / 32768.0;
       }
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf;
-      src.connect(gainNode);
-      const now = audioCtx.currentTime;
-      if (audioNextPlayTime < now) audioNextPlayTime = now;
-      if (audioNextPlayTime > now + 0.1) audioNextPlayTime = now;
-      src.start(audioNextPlayTime);
-      audioNextPlayTime += buf.duration;
-    } catch (_) {}
+
+      scheduleAudioBuffer(webAudioBuf);
+    } catch (err) {
+      console.warn('[Audio] Raw PCM playback error:', err);
+    }
+  }
+
+  function showAudioResumePrompt() {
+    if (isMuted) return;
+    let el = document.getElementById('audioResumeBanner');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'audioResumeBanner';
+      el.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);background:rgba(15,23,42,0.92);border:1px solid rgba(59,130,246,0.6);backdrop-filter:blur(8px);color:#93c5fd;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;z-index:99999;box-shadow:0 4px 16px rgba(0,0,0,0.5);transition:opacity 0.2s ease;';
+      el.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg><span>Click to enable sound</span>';
+      el.onclick = function() {
+        initAudio();
+        if (audioCtx) audioCtx.resume().then(hideAudioResumePrompt).catch(function(){});
+      };
+      document.body.appendChild(el);
+    }
+  }
+
+  function hideAudioResumePrompt() {
+    const el = document.getElementById('audioResumeBanner');
+    if (el) el.remove();
+  }
+
+  function syncMuteUI() {
+    const btn = document.getElementById('muteBtn');
+    if (btn) {
+      btn.innerHTML = (isMuted || currentVolume === 0)
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="1" y1="1" x2="23" y2="23"/><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
+      btn.title = isMuted ? 'Unmute audio' : 'Mute audio';
+      btn.style.color = (isMuted || currentVolume === 0) ? '#f87171' : '';
+      btn.style.borderColor = (isMuted || currentVolume === 0) ? 'rgba(248,113,113,.5)' : '';
+    }
+    const iconM = document.getElementById('muteBtnMIcon');
+    const btnM  = document.getElementById('muteBtnM');
+    if (iconM) iconM.innerHTML = (isMuted || currentVolume === 0)
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="1" y1="1" x2="23" y2="23"/><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+    if (btnM) {
+      btnM.style.color = (isMuted || currentVolume === 0) ? '#f87171' : '';
+      btnM.style.borderColor = (isMuted || currentVolume === 0) ? 'rgba(248,113,113,.5)' : '';
+    }
+    const modalBtn = document.getElementById('modalMuteBtn');
+    if (modalBtn) {
+      modalBtn.textContent = (isMuted || currentVolume === 0) ? '🔇 Unmute Audio' : '🔊 Mute Audio';
+    }
+    const slider = document.getElementById('volSlider');
+    if (slider) {
+      slider.value = isMuted ? 0 : currentVolume;
+    }
   }
 
   // ── Mute toggle ──────────────────────────────────────────────────────────
   function toggleMute() {
     isMuted = !isMuted;
     initAudio();
-    if (gainNode) gainNode.gain.value = isMuted ? 0 : 1;
+    if (gainNode) {
+      gainNode.gain.value = isMuted ? 0 : (currentVolume / 100);
+    }
     if (!isMuted && audioCtx && audioCtx.state === 'suspended') {
-      audioCtx.resume().catch(function(){});
+      audioCtx.resume().then(hideAudioResumePrompt).catch(function(){});
     }
-    if (isMuted && audioDecoder && audioDecoder.state !== 'closed') {
-      try { audioDecoder.flush().catch(function(){}); } catch (_) {}
+    if (isMuted) {
+      if (opusDecoder && opusDecoder.state !== 'closed') {
+        try { opusDecoder.flush().catch(function(){}); } catch (_) {}
+      }
+      if (aacDecoder && aacDecoder.state !== 'closed') {
+        try { aacDecoder.flush().catch(function(){}); } catch (_) {}
+      }
     }
-    // Sync desktop sidebar mute button
-    const btn = document.getElementById('muteBtn');
-    if (btn) {
-      btn.innerHTML = isMuted
-        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="1" y1="1" x2="23" y2="23"/><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>'
-        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
-      btn.title = isMuted ? 'Unmute audio' : 'Mute audio';
-      btn.style.color = isMuted ? '#f87171' : '';
-      btn.style.borderColor = isMuted ? 'rgba(248,113,113,.5)' : '';
-    }
-    // Sync mobile bottom bar mute button
-    const iconM = document.getElementById('muteBtnMIcon');
-    const btnM  = document.getElementById('muteBtnM');
-    if (iconM) iconM.innerHTML = isMuted
-      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="1" y1="1" x2="23" y2="23"/><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>'
-      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
-    if (btnM) {
-      btnM.style.color = isMuted ? '#f87171' : '';
-      btnM.style.borderColor = isMuted ? 'rgba(248,113,113,.5)' : '';
-    }
+    syncMuteUI();
   }
+
+  // Sync mute UI on initial load
+  setTimeout(syncMuteUI, 50);
 
   // Resume AudioContext on first user gesture
   ['click', 'mousedown', 'pointerdown', 'touchstart', 'keydown'].forEach(function(evt) {
-    window.addEventListener(evt, initAudio, { passive: true });
+    window.addEventListener(evt, function() {
+      initAudio();
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume().then(hideAudioResumePrompt).catch(function(){});
+      }
+    }, { passive: true });
   });
 
   // ── WebCodecs H264 Decoder (Auto-adapts to phones, tablets, and any hardware profile) ──
@@ -1766,14 +1917,24 @@ function buildPlayerHtml(serial, screenW, screenH) {
       const rawU8 = new Uint8Array(e.data);
       if (rawU8.length < 4) return;
 
-      // Handle tagged Audio binary frames — [0x41]['O'=opus / 'R'=raw][...payload]
+      // Handle tagged Audio binary frames — [0x41][codec][flags][payload] or [0x41][codec][payload]
       if (rawU8[0] === 0x41) {
         if (rawU8.length < 3) return;
-        const codec = rawU8[1]; // 0x4F='O' opus, 0x52='R' raw
-        const payload = rawU8.subarray(2);
-        if (codec === 0x4F) {       // Opus
-          playOpusPacket(payload);
-        } else {                    // Raw PCM fallback
+        const codec = rawU8[1]; // 0x4F='O' opus, 0x43='C' aac, 0x52='R' raw
+        let isConfig = false;
+        let payload;
+        if (rawU8.length >= 4 && (rawU8[2] === 0x00 || rawU8[2] === 0x01)) {
+          isConfig = (rawU8[2] === 0x01);
+          payload = rawU8.subarray(3);
+        } else {
+          payload = rawU8.subarray(2);
+        }
+
+        if (codec === 0x4F) {        // Opus
+          playOpusPacket(payload, isConfig);
+        } else if (codec === 0x43) { // AAC
+          playAacPacket(payload, isConfig);
+        } else {                     // Raw PCM
           playRawPcm(payload);
         }
         return;
@@ -1946,6 +2107,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
 
   function ensureActiveOnInteraction() {
     initAudio();
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume().then(hideAudioResumePrompt).catch(function(){});
+    }
     if (!hasKeyframe) {
       send({ type: 'request_keyframe' });
       send({ type: 'wake' });
@@ -2162,16 +2326,22 @@ function buildPlayerHtml(serial, screenW, screenH) {
       .then(()=>{ alert(f.name+' uploaded!'); document.getElementById('uploadModal').style.display='none'; })
       .catch(()=>alert('Upload failed'));
   }
-  let currentVolume = 100;
   function setVolume(val) {
-    currentVolume = parseFloat(val);
-    if (gainNode) gainNode.gain.value = isMuted ? 0 : (currentVolume / 100);
-    const btn = document.getElementById('muteBtn');
-    if (btn) {
-      btn.innerHTML = (isMuted || currentVolume === 0) 
-        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="1" y1="1" x2="23" y2="23"/><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>' 
-        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+    const v = parseFloat(val);
+    currentVolume = v;
+    if (v > 0 && isMuted) {
+      isMuted = false;
+    } else if (v === 0) {
+      isMuted = true;
     }
+    initAudio();
+    if (gainNode) {
+      gainNode.gain.value = isMuted ? 0 : (currentVolume / 100);
+    }
+    if (!isMuted && audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume().then(hideAudioResumePrompt).catch(function(){});
+    }
+    syncMuteUI();
   }
 
   function rotateScreen() {
@@ -2232,7 +2402,7 @@ async function startStreamServer(serial, port, aliasSerial) {
 
   // Start scrcpy engine asynchronously so stream server port listens immediately
   const engine = new ScrcpyEngine(serial);
-  engine.enableAudio = false;  // Keep audio disabled so socket #2 is guaranteed to be the control socket
+  engine.enableAudio = true;  // Audio streams on dedicated independent channel
   const videoPort = port + 1000;
   engine.start(videoPort)
     .then(() => logger.info(`[StreamServer] ScrcpyEngine ready for ${serial}`))

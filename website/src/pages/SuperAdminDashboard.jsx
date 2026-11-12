@@ -395,9 +395,10 @@ export default function SuperAdminDashboard() {
                               style={{ padding: '6px 12px', fontSize: '12px' }}
                               onClick={(e) => {
                                 e.preventDefault();
+                                const cleanUrl = (d.stream_url || '').replace(/([?&])muted=[^&]*/gi, '');
                                 const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
                                 if (isMobile) {
-                                  window.open(d.stream_url, '_blank');
+                                  window.open(cleanUrl, '_blank');
                                 } else {
                                   const screenW = window.screen.availWidth || window.screen.width || 1280;
                                   const screenH = window.screen.availHeight || window.screen.height || 900;
@@ -405,7 +406,7 @@ export default function SuperAdminDashboard() {
                                   const h = Math.min(screenH - 40, 940);
                                   const left = Math.max(0, Math.round((screenW - w) / 2));
                                   const top = Math.max(0, Math.round((screenH - h) / 2));
-                                  window.open(d.stream_url, `Stream_${d.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
+                                  window.open(cleanUrl, `Stream_${d.serial || 'Device'}`, `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=no,status=no,location=no,toolbar=no,menubar=no,popup=yes`);
                                 }
                               }}
                             >

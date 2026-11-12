@@ -479,6 +479,7 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
                         if (!u) u = `http://localhost:8100/?udid=${encodeURIComponent(focusDevice.serial || '')}`;
                         else if (typeof window !== 'undefined' && window.location.protocol === 'https:' && u.startsWith('http://') && !u.includes('localhost') && !u.includes('127.0.0.1')) u = u.replace(/^http:/, 'https:');
                         if (focusDevice.serial && !u.includes('udid=')) u += (u.includes('?') ? '&' : '?') + `udid=${encodeURIComponent(focusDevice.serial)}`;
+                        u = u.replace(/([?&])muted=[^&]*/gi, '');
                         const isMobile = typeof window !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth <= 768);
                         if (isMobile) {
                           window.open(u, '_blank');
@@ -516,12 +517,13 @@ export default function CctvWall({ currentUser, isSuperAdmin, isSeedAdmin }) {
                     if (!u) u = `http://localhost:8100/?udid=${encodeURIComponent(focusDevice.serial || '')}`;
                     else if (typeof window !== 'undefined' && window.location.protocol === 'https:' && u.startsWith('http://') && !u.includes('localhost') && !u.includes('127.0.0.1')) u = u.replace(/^http:/, 'https:');
                     if (focusDevice.serial && !u.includes('udid=')) u += (u.includes('?') ? '&' : '?') + `udid=${encodeURIComponent(focusDevice.serial)}`;
+                    u = u.replace(/([?&])muted=[^&]*/gi, '');
                     return u;
                   })()} 
                   style={{ width: '100%', height: '100%', border: 'none', pointerEvents: canOpenStreamLink ? 'auto' : 'none' }} 
                   title="Focused Device Stream"
                   referrerPolicy="no-referrer"
-                  allow="autoplay; fullscreen"
+                  allow="autoplay; fullscreen; microphone"
                 />
               </div>
             </div>

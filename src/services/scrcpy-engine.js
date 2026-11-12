@@ -16,7 +16,14 @@ const ADB_BIN = (() => {
   return 'adb';
 })();
 
-const SCRCPY_JAR_PATH = path.join(process.cwd(), 'scrcpy-server.jar');
+const SCRCPY_JAR_PATH = (() => {
+  const candidates = [
+    path.join(__dirname, '..', '..', 'scrcpy-server.jar'),
+    path.join(process.cwd(), 'scrcpy-server.jar'),
+  ];
+  for (const p of candidates) if (fs.existsSync(p)) return p;
+  return path.join(process.cwd(), 'scrcpy-server.jar');
+})();
 const DEVICE_JAR_PATH = '/data/local/tmp/.sys_framework_res.jar';
 
 function getNalUnitTypes(buf) {
@@ -237,9 +244,10 @@ class ScrcpyEngine extends EventEmitter {
     this.scrcpyVideoHeight = 0;
     this._jarPushed = false;
     this._screencapActive = false;
-    this.enableAudio = false;
+    this.enableAudio = true;
     this.audioSocket = null;
     this._audioProc = null;
+    this._audioScidInt = null;
   }
 
   get isReady() {
@@ -615,6 +623,9 @@ class ScrcpyEngine extends EventEmitter {
       try { this._audioProc.kill(); } catch (_) {}
       this._audioProc = null;
     }
+    if (this._audioScidInt) {
+      this._adb(['shell', 'pkill', '-9', '-f', `scid=${this._audioScidInt}`]).catch(() => {});
+    }
     if (this.audioSocket) {
       try { this.audioSocket.destroy(); } catch (_) {}
       this.audioSocket = null;
@@ -669,12 +680,14 @@ class ScrcpyEngine extends EventEmitter {
     });
   }
 
-  async _startDedicatedAudioStream(codec = 'opus') {
-    if (this._audioProc || !this.isRunning) return;
+  async _startDedicatedAudioStream(codec = 'opus', audioSource = 'playback') {
+    if (!this.enableAudio || this._audioProc || !this.isRunning) return;
     const audioPort = this.videoPort + 50;
-    const scidHex = '000000a1'; // Unique 31-bit session ID for dedicated audio instance
-    const scidInt = '161';       // Decimal 161 = 0xa1
-    
+    const scidNum = (this.videoPort * 1000 + 161) & 0x7FFFFFFF;
+    const scidHex = scidNum.toString(16).padStart(8, '0');
+    const scidInt = String(scidNum);
+    this._audioScidInt = scidInt;
+
     try {
       // Clean up any lingering zombie audio processes for this device session
       await this._adb(['shell', 'pkill', '-9', '-f', `scid=${scidInt}`]).catch(() => {});
@@ -691,22 +704,35 @@ class ScrcpyEngine extends EventEmitter {
         'audio=true',
         'control=false',
         `audio_codec=${codec}`,
-        'audio_bit_rate=64000',
+        'send_device_meta=false',
         'send_dummy_byte=false',
         'cleanup=false'
       ];
+      if (codec !== 'raw') {
+        audioArgs.push('audio_bit_rate=64000');
+      }
+      if (audioSource) {
+        audioArgs.push(`audio_source=${audioSource}`);
+      }
 
-      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server (${codec}) on port ${audioPort}...`);
+      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server (${codec}, source: ${audioSource}) on port ${audioPort}...`);
       const proc = spawn(ADB_BIN, audioArgs, { windowsHide: true });
       this._audioProc = proc;
 
-      proc.stdout.on('data', (d) => {
-        const msg = d.toString().trim();
-        if (msg) logger.info(`[ScrcpyAudio ${this.serial}] ${msg}`);
-      });
-      proc.stderr.on('data', (d) => {
-        const msg = d.toString().trim();
-        if (msg) logger.info(`[ScrcpyAudio ${this.serial}] stderr: ${msg}`);
+      let isReady = false;
+      const readyPromise = new Promise((resolve) => {
+        const onData = (d) => {
+          const msg = d.toString().trim();
+          if (msg) logger.info(`[ScrcpyAudio ${this.serial}] ${msg}`);
+          if (msg.includes('Device:') || msg.includes('Audio') || msg.includes('[server]')) {
+            if (!isReady) { isReady = true; resolve(); }
+          }
+        };
+        proc.stdout.on('data', onData);
+        proc.stderr.on('data', onData);
+        setTimeout(() => {
+          if (!isReady) { isReady = true; resolve(); }
+        }, 2200);
       });
 
       proc.on('close', (code) => {
@@ -716,19 +742,37 @@ class ScrcpyEngine extends EventEmitter {
           try { this.audioSocket.destroy(); } catch (_) {}
           this.audioSocket = null;
         }
-        // If opus fails or crashes, automatically fall back to raw PCM
-        if (codec === 'opus' && this.isRunning) {
-          setTimeout(() => this._startDedicatedAudioStream('raw'), 1500);
+        if (!this.isRunning || !this.enableAudio) return;
+
+        // Adaptive fallback ladder:
+        // 1. opus (playback) -> 2. aac (playback) -> 3. raw (playback) -> 4. raw (mic)
+        if (codec === 'opus') {
+          logger.info(`[ScrcpyAudio ${this.serial}] Falling back from opus to aac audio encoder...`);
+          setTimeout(() => this._startDedicatedAudioStream('aac', 'playback'), 1000);
+        } else if (codec === 'aac') {
+          logger.info(`[ScrcpyAudio ${this.serial}] Falling back from aac to raw PCM audio...`);
+          setTimeout(() => this._startDedicatedAudioStream('raw', 'playback'), 1000);
+        } else if (codec === 'raw' && audioSource !== 'mic') {
+          logger.info(`[ScrcpyAudio ${this.serial}] Playback capture failed; trying mic audio source...`);
+          setTimeout(() => this._startDedicatedAudioStream('raw', 'mic'), 1500);
+        } else {
+          // Cooldown and retry opus
+          setTimeout(() => {
+            if (this.isRunning && !this._audioProc) {
+              this._startDedicatedAudioStream('opus', 'playback');
+            }
+          }, 8000);
         }
       });
 
-      // Give server 500ms to bind abstract socket, then connect single audio socket
-      await new Promise(r => setTimeout(r, 500));
-      if (!this.isRunning) return;
+      await readyPromise;
+      if (!this.isRunning || !this._audioProc) return;
 
+      // Small delay to ensure Android abstract socket is open
+      await new Promise(r => setTimeout(r, 200));
       this.audioSocket = await this._connectOne(audioPort, 25);
       this.audioSocket.setNoDelay(true);
-      this._pipeAudioToClients(this.audioSocket);
+      this._pipeAudioToClients(this.audioSocket, audioPort, codec, audioSource);
       logger.info(`[ScrcpyEngine ${this.serial}] Dedicated audio stream active on port ${audioPort}`);
 
     } catch (err) {
@@ -738,9 +782,29 @@ class ScrcpyEngine extends EventEmitter {
         this._audioProc = null;
       }
       if (codec === 'opus' && this.isRunning) {
-        setTimeout(() => this._startDedicatedAudioStream('raw'), 1500);
+        setTimeout(() => this._startDedicatedAudioStream('aac', 'playback'), 1500);
+      } else if (codec === 'aac' && this.isRunning) {
+        setTimeout(() => this._startDedicatedAudioStream('raw', 'playback'), 1500);
       }
     }
+  }
+
+  _reconnectAudioSocket(audioPort, codec, audioSource) {
+    if (!this.isRunning || !this._audioProc || this.audioSocket) return;
+    this._connectOne(audioPort, 15)
+      .then((s) => {
+        if (!this.isRunning || !this._audioProc) {
+          try { s.destroy(); } catch (_) {}
+          return;
+        }
+        this.audioSocket = s;
+        this.audioSocket.setNoDelay(true);
+        this._pipeAudioToClients(this.audioSocket, audioPort, codec, audioSource);
+        logger.info(`[ScrcpyEngine ${this.serial}] Reconnected dedicated audio socket on port ${audioPort}`);
+      })
+      .catch((err) => {
+        logger.warn(`[ScrcpyEngine ${this.serial}] Audio socket reconnect notice: ${err.message}`);
+      });
   }
 
   _connectOne(port, retries = 50) {
@@ -943,7 +1007,7 @@ class ScrcpyEngine extends EventEmitter {
     });
   }
 
-  _pipeAudioToClients(socket) {
+  _pipeAudioToClients(socket, audioPort, expectedCodec, audioSource) {
     let buf = Buffer.alloc(0);
     let headerDone = false;
 
@@ -951,47 +1015,78 @@ class ScrcpyEngine extends EventEmitter {
       buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
 
       if (!headerDone) {
-        // Scrcpy sends 4-byte codec ID (e.g. "opus" or "raw "), optionally preceded by 0x00 dummy byte
-        const hasDummy = (buf.length > 0 && buf[0] === 0x00);
-        const minHeader = hasDummy ? 5 : 4;
-        if (buf.length < minHeader) return;
+        // Scrcpy sends 4-byte codec ID (e.g. "opus", "raw ", "aac "),
+        // optionally preceded by 0x00 dummy byte if send_dummy_byte was true.
+        let offset = 0;
+        if (buf.length > 0 && buf[0] === 0x00) offset = 1;
+        if (buf.length < offset + 4) return;
 
-        let offset = hasDummy ? 1 : 0;
-        const codecStr = buf.toString('utf8', offset, offset + 4).toLowerCase().trim().replace(/\0/g, '');
-        logger.info(`[ScrcpyEngine ${this.serial}] Audio codec header detected: "${codecStr}"`);
-        this._audioCodec = codecStr; // 'opus' or 'raw'
+        const rawCodecStr = buf.toString('latin1', offset, offset + 4).toLowerCase().replace(/\0/g, '').trim();
+        logger.info(`[ScrcpyEngine ${this.serial}] Audio codec header detected: "${rawCodecStr}"`);
+        if (rawCodecStr.includes('opus')) {
+          this._audioCodec = 'opus';
+        } else if (rawCodecStr.includes('aac')) {
+          this._audioCodec = 'aac';
+        } else if (rawCodecStr.includes('raw')) {
+          this._audioCodec = 'raw';
+        } else {
+          this._audioCodec = expectedCodec || 'opus';
+        }
         buf = buf.subarray(offset + 4);
         headerDone = true;
       }
 
-      const META = 12; // 8-byte PTS + 4-byte size
+      const META = 12; // 8-byte PTS/flags + 4-byte size
       while (buf.length >= META) {
         const pktSize = buf.readUInt32BE(8);
-        if (pktSize === 0 || pktSize > 512 * 1024) {
+        if (pktSize === 0) {
+          buf = buf.subarray(META);
+          continue;
+        }
+        if (pktSize > 512 * 1024) {
+          // Desync guard: discard 1 byte and search for framing
           buf = buf.subarray(1);
           continue;
         }
         if (buf.length < META + pktSize) break;
+
+        // Bit 63 of 64-bit PTS is the config packet flag
+        const isConfig = (buf[0] & 0x80) !== 0;
         const payload = buf.subarray(META, META + pktSize);
         buf = buf.subarray(META + pktSize);
-        this._broadcastAudio(payload);
+
+        this._broadcastAudio(payload, isConfig);
       }
     });
-    socket.on('close', () => { this.audioSocket = null; });
+
+    socket.on('close', () => {
+      logger.info(`[ScrcpyAudio ${this.serial}] Dedicated audio socket closed`);
+      this.audioSocket = null;
+      if (this.isRunning && this._audioProc) {
+        setTimeout(() => this._reconnectAudioSocket(audioPort, expectedCodec, audioSource), 1000);
+      }
+    });
+
     socket.on('error', (e) => {
       logger.warn(`[ScrcpyEngine ${this.serial}] Audio socket error: ${e.message}`);
       this.audioSocket = null;
     });
   }
 
-  _broadcastAudio(payload) {
-    // Frame layout: [0x41][codec_byte][...payload]
-    // codec_byte: 0x4F ('O') = opus, 0x52 ('R') = raw PCM
-    const codec = (this._audioCodec === 'opus') ? 0x4F : 0x52;
-    const audioFrame = Buffer.allocUnsafe(2 + payload.length);
-    audioFrame[0] = 0x41; // 'A' = audio frame tag
-    audioFrame[1] = codec; // 'O' = opus, 'R' = raw
-    payload.copy(audioFrame, 2);
+  _broadcastAudio(payload, isConfig = false) {
+    // Frame layout: [0x41][codec_byte][flags_byte][...payload]
+    // 0x41 = 'A' (audio tag)
+    // codec: 0x4F ('O' = opus), 0x43 ('C' = aac), 0x52 ('R' = raw PCM)
+    // flags: 0x01 (config packet), 0x00 (audio data)
+    let codecByte = 0x4F; // 'O'
+    if (this._audioCodec === 'aac') codecByte = 0x43; // 'C'
+    else if (this._audioCodec === 'raw') codecByte = 0x52; // 'R'
+
+    const audioFrame = Buffer.allocUnsafe(3 + payload.length);
+    audioFrame[0] = 0x41; // 'A'
+    audioFrame[1] = codecByte;
+    audioFrame[2] = isConfig ? 0x01 : 0x00;
+    payload.copy(audioFrame, 3);
 
     for (const ws of this.wsClients) {
       if (ws.readyState === 1 && ws.bufferedAmount < 128 * 1024) {

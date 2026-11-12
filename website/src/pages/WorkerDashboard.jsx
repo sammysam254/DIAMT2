@@ -176,6 +176,7 @@ export default function WorkerDashboard() {
           }
           const u = new URL(streamUrl);
           u.searchParams.set('pin', unlockModal.access_password.trim());
+          u.searchParams.delete('muted');
           if (unlockModal.devices?.serial && !u.searchParams.has('udid')) {
             u.searchParams.set('udid', unlockModal.devices.serial);
           }
