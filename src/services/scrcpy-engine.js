@@ -623,8 +623,8 @@ class ScrcpyEngine extends EventEmitter {
       try { this._audioProc.kill(); } catch (_) {}
       this._audioProc = null;
     }
-    if (this._audioScidInt) {
-      this._adb(['shell', 'pkill', '-9', '-f', `scid=${this._audioScidInt}`]).catch(() => {});
+    if (this._audioScidHex) {
+      this._adb(['shell', 'pkill', '-9', '-f', `scid=${this._audioScidHex}`]).catch(() => {});
     }
     if (this.audioSocket) {
       try { this.audioSocket.destroy(); } catch (_) {}
@@ -685,12 +685,12 @@ class ScrcpyEngine extends EventEmitter {
     const audioPort = this.videoPort + 50;
     const scidNum = (this.videoPort * 1000 + 161) & 0x7FFFFFFF;
     const scidHex = scidNum.toString(16).padStart(8, '0');
-    const scidInt = String(scidNum);
-    this._audioScidInt = scidInt;
+    this._audioScidHex = scidHex;
+    this._audioDebugLogs = this._audioDebugLogs || [];
 
     try {
       // Clean up any lingering zombie audio processes for this device session
-      await this._adb(['shell', 'pkill', '-9', '-f', `scid=${scidInt}`]).catch(() => {});
+      await this._adb(['shell', 'pkill', '-9', '-f', `scid=${scidHex}`]).catch(() => {});
       try { await this._adb(['forward', '--remove', `tcp:${audioPort}`]); } catch (_) {}
       await this._adb(['forward', `tcp:${audioPort}`, `localabstract:scrcpy_${scidHex}`]);
 
@@ -699,7 +699,7 @@ class ScrcpyEngine extends EventEmitter {
         `CLASSPATH=/data/local/tmp/scrcpy-server.jar:${DEVICE_JAR_PATH}`,
         'app_process', '/', 'com.genymobile.scrcpy.Server', '2.4',
         'tunnel_forward=true',
-        `scid=${scidInt}`,
+        `scid=${scidHex}`,
         'video=false',
         'audio=true',
         'control=false',
@@ -715,7 +715,7 @@ class ScrcpyEngine extends EventEmitter {
         audioArgs.push(`audio_source=${audioSource}`);
       }
 
-      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server (${codec}, source: ${audioSource}) on port ${audioPort}...`);
+      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server (${codec}, source: ${audioSource}) on port ${audioPort} [scid=${scidHex}]...`);
       const proc = spawn(ADB_BIN, audioArgs, { windowsHide: true });
       this._audioProc = proc;
 
@@ -723,7 +723,11 @@ class ScrcpyEngine extends EventEmitter {
       const readyPromise = new Promise((resolve) => {
         const onData = (d) => {
           const msg = d.toString().trim();
-          if (msg) logger.info(`[ScrcpyAudio ${this.serial}] ${msg}`);
+          if (msg) {
+            logger.info(`[ScrcpyAudio ${this.serial}] ${msg}`);
+            this._audioDebugLogs.push(`[${new Date().toISOString()}] ${msg}`);
+            if (this._audioDebugLogs.length > 50) this._audioDebugLogs.shift();
+          }
           if (msg.includes('Device:') || msg.includes('Audio') || msg.includes('[server]')) {
             if (!isReady) { isReady = true; resolve(); }
           }
@@ -1087,6 +1091,7 @@ class ScrcpyEngine extends EventEmitter {
     audioFrame[1] = codecByte;
     audioFrame[2] = isConfig ? 0x01 : 0x00;
     payload.copy(audioFrame, 3);
+    this._audioPacketsSent = (this._audioPacketsSent || 0) + 1;
 
     for (const ws of this.wsClients) {
       if (ws.readyState === 1 && ws.bufferedAmount < 128 * 1024) {

@@ -265,6 +265,14 @@ function handleControl(type, data, serial, engine) {
     }
   } else if (type === 'reboot') {
     exec(`"${ADB_BIN}" -s ${serial} reboot`);
+  } else if (type === 'start_audio' || type === 'audio_restart') {
+    if (engine && engine.enableAudio && typeof engine._startDedicatedAudioStream === 'function') {
+      if (engine._audioProc) {
+        try { engine._audioProc.kill(); } catch (_) {}
+        engine._audioProc = null;
+      }
+      engine._startDedicatedAudioStream().catch(() => {});
+    }
   } else if (type === 'expand_notifications' || type === 'notifications') {
     exec(`"${ADB_BIN}" -s ${serial} shell cmd statusbar expand`);
     nudgeScreen();
@@ -1346,6 +1354,9 @@ function buildPlayerHtml(serial, screenW, screenH) {
   let audioNextPlayTime = 0;
   const urlParams = new URLSearchParams(window.location.search);
   let isMuted = urlParams.get('muted') === '1' || urlParams.get('muted') === 'true';
+  if (urlParams.get('muted') === '0' || urlParams.get('muted') === 'false') {
+    isMuted = false;
+  }
   let currentVolume = 100;
 
   function initAudio() {
@@ -2507,6 +2518,29 @@ async function startStreamServer(serial, port, aliasSerial) {
       return;
     }
 
+    // Diagnostic endpoint
+    if (p === '/diag' || p === '/api/debug/audio') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          serial: effectiveSerial,
+          enableAudio: !!effectiveEngine.enableAudio,
+          hasAudioProc: !!effectiveEngine._audioProc,
+          audioProcPid: effectiveEngine._audioProc ? effectiveEngine._audioProc.pid : null,
+          hasAudioSocket: !!effectiveEngine.audioSocket,
+          audioSocketDestroyed: effectiveEngine.audioSocket ? effectiveEngine.audioSocket.destroyed : null,
+          audioCodec: effectiveEngine._audioCodec || null,
+          audioPacketsSent: effectiveEngine._audioPacketsSent || 0,
+          wsClientsCount: effectiveEngine.wsClients ? effectiveEngine.wsClients.size : 0,
+          audioDebugLogs: effectiveEngine._audioDebugLogs || []
+        }, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
     // Render Stream Player
     res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'});
     const playerW = effectiveEngine.videoWidth  > 0 ? effectiveEngine.videoWidth  : effectiveEngine.screenWidth;
@@ -2554,6 +2588,9 @@ async function startStreamServer(serial, port, aliasSerial) {
 
     logger.info(`[StreamServer] WS connected and authorized for ${effectiveWsSerial}`);
     effectiveWsEngine.addClient(ws);
+    if (effectiveWsEngine.enableAudio && !effectiveWsEngine._audioProc && effectiveWsEngine.isRunning && typeof effectiveWsEngine._startDedicatedAudioStream === 'function') {
+      effectiveWsEngine._startDedicatedAudioStream().catch(() => {});
+    }
 
     // Heartbeat verification every 10 seconds: if admin resets PIN/key or unallocates, revoke stream
     const authWatcherTimer = setInterval(async () => {
