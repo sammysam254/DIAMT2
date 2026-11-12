@@ -680,7 +680,7 @@ class ScrcpyEngine extends EventEmitter {
     });
   }
 
-  async _startDedicatedAudioStream(codec = 'opus', audioSource = 'playback') {
+  async _startDedicatedAudioStream(codec = 'opus', audioSource = 'output') {
     if (!this.enableAudio || this._audioProc || !this.isRunning) return;
     const audioPort = this.videoPort + 50;
     const scidNum = (this.videoPort * 1000 + 161) & 0x7FFFFFFF;
@@ -689,7 +689,10 @@ class ScrcpyEngine extends EventEmitter {
     this._audioDebugLogs = this._audioDebugLogs || [];
 
     try {
-      // Clean up any lingering zombie audio processes for this device session
+      // 1. Wake device screen to ensure Android OS allows internal audio playback capture
+      await this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
+
+      // 2. Clean up any lingering zombie audio processes for this device session
       await this._adb(['shell', 'pkill', '-9', '-f', `scid=${scidHex}`]).catch(() => {});
       try { await this._adb(['forward', '--remove', `tcp:${audioPort}`]); } catch (_) {}
       await this._adb(['forward', `tcp:${audioPort}`, `localabstract:scrcpy_${scidHex}`]);
@@ -711,11 +714,12 @@ class ScrcpyEngine extends EventEmitter {
       if (codec !== 'raw') {
         audioArgs.push('audio_bit_rate=64000');
       }
-      if (audioSource) {
-        audioArgs.push(`audio_source=${audioSource}`);
+      // Only specify audio_source if explicitly 'mic'; otherwise omit so scrcpy uses native 'output' (internal submix audio)
+      if (audioSource === 'mic') {
+        audioArgs.push('audio_source=mic');
       }
 
-      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server (${codec}, source: ${audioSource}) on port ${audioPort} [scid=${scidHex}]...`);
+      logger.info(`[ScrcpyEngine ${this.serial}] Spawning dedicated audio server (${codec}, internal system output) on port ${audioPort} [scid=${scidHex}]...`);
       const proc = spawn(ADB_BIN, audioArgs, { windowsHide: true });
       this._audioProc = proc;
 
@@ -748,22 +752,20 @@ class ScrcpyEngine extends EventEmitter {
         }
         if (!this.isRunning || !this.enableAudio) return;
 
-        // Adaptive fallback ladder:
-        // 1. opus (playback) -> 2. aac (playback) -> 3. raw (playback) -> 4. raw (mic)
+        // Adaptive fallback ladder for pure internal digital audio:
+        // 1. opus (output) -> 2. aac (output) -> 3. raw (output)
+        // (Never fall back to room mic, preventing static/ambient noise and cross-talk between phones)
         if (codec === 'opus') {
           logger.info(`[ScrcpyAudio ${this.serial}] Falling back from opus to aac audio encoder...`);
-          setTimeout(() => this._startDedicatedAudioStream('aac', 'playback'), 1000);
+          setTimeout(() => this._startDedicatedAudioStream('aac', 'output'), 1000);
         } else if (codec === 'aac') {
           logger.info(`[ScrcpyAudio ${this.serial}] Falling back from aac to raw PCM audio...`);
-          setTimeout(() => this._startDedicatedAudioStream('raw', 'playback'), 1000);
-        } else if (codec === 'raw' && audioSource !== 'mic') {
-          logger.info(`[ScrcpyAudio ${this.serial}] Playback capture failed; trying mic audio source...`);
-          setTimeout(() => this._startDedicatedAudioStream('raw', 'mic'), 1500);
+          setTimeout(() => this._startDedicatedAudioStream('raw', 'output'), 1000);
         } else {
-          // Cooldown and retry opus
+          // Cooldown and retry opus internal output
           setTimeout(() => {
             if (this.isRunning && !this._audioProc) {
-              this._startDedicatedAudioStream('opus', 'playback');
+              this._startDedicatedAudioStream('opus', 'output');
             }
           }, 8000);
         }
