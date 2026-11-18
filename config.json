@@ -9,10 +9,10 @@
   "supabaseUrl": "https://ipnjbzbsnmkfrjaaidoj.supabase.co",
   "supabaseServiceRoleKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwbmpiemJzbm1rZnJqYWFpZG9qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MTc2NjkyNiwiZXhwIjoyMTA3MzQyOTI2fQ.gk2YiqqhJqDiCRG6PhIL5SrVwbGj61cXQKIxdLOg6_A",
   "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwbmpiemJzbm1rZnJqYWFpZG9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3NjY5MjYsImV4cCI6MjEwNzM0MjkyNn0.KvJ3Q8gsgiRedOLL2R_Zrg2Cf5HVIlIofDWp8sM-Tsw",
-  "domain": "remotecontrol.diamt.site",
+  "domain": "",
   "allowLocalStandalone": true,
-  "cloudflareToken": "eyJhIjoiYzFlMzEyY2Q2YWFjNTNlOWJkYWUzZTY5MmJiMWM4Y2MiLCJ0IjoiNTUzNzJmNTEtMTcyOC00Mzc2LTgwMDYtZmE0MGUxMzZhMjMzIiwicyI6Ik9URTNPRGN6TUdJdE16TXdOUzAwTTJWbUxXSXhPRGN0TldGbFl6VTVOalV6T0RrMiJ9",
-  "useQuickTunnel": false,
+  "cloudflareToken": "",
+  "useQuickTunnel": true,
   "machineBindingCode": "",
   "redisUrl": "redis://default:gQAAAAAAA2kSAAIgcDEwNDc0MmExMTVjNDg0YWZlOGQwZWJlNzQ5OWNiMDE2Mg@super-gannet-223506.upstash.io:6379"
 }
