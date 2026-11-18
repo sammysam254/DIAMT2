@@ -23,7 +23,7 @@ echo.
 
 :: ── Where to install the agent ─────────────────────────────────────────────
 set "INSTALL_DIR=C:\DeviceFarmAgent"
-set "REPO_URL=https://github.com/sammysam254/DIAMT.git"
+set "REPO_URL=https://github.com/sammysam254/DIAMT2.git"
 set "CURRENT_DIR=%~dp0"
 if "%CURRENT_DIR:~-1%"=="\" set "CURRENT_DIR=%CURRENT_DIR:~0,-1%"
 
