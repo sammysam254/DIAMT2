@@ -24,6 +24,7 @@ class ScrcpyDashboardClient {
     this.ws = null;
     this.decoder = null;
     this.decoderConfigured = false;
+    this.hasReceivedKeyframe = false;
     this.videoWidth = 1080;
     this.videoHeight = 1920;
     this.isMouseDown = false;
@@ -90,6 +91,17 @@ class ScrcpyDashboardClient {
             this.canvas.width = this.videoWidth;
             this.canvas.height = this.videoHeight;
             console.log(`[ScrcpyClient] Device metadata: ${meta.model} (${this.videoWidth}x${this.videoHeight})`);
+          } else if (meta.type === 'stream_reset') {
+            // Server restarting stream - reset decoder state and wait for new SPS+keyframe
+            console.log('[ScrcpyClient] Stream reset received, reinitializing decoder');
+            if (this.decoder && this.decoder.state !== 'closed') {
+              try { this.decoder.close(); } catch (_) {}
+            }
+            this.decoder = null;
+            this.decoderConfigured = false;
+            this.hasReceivedKeyframe = false;
+            this.frameIndex = 0;
+            this._initDecoder();
           }
         } catch (_) {}
         return;
@@ -169,12 +181,19 @@ class ScrcpyDashboardClient {
           console.log(`[ScrcpyClient] Decoder configured with codec: ${codecString}`);
         } catch (err) {
           console.error('[ScrcpyClient] Failed to configure decoder with codec:', codecString, err);
+          return;
         }
       }
     }
 
-    // Only decode if configured
+    // CRITICAL: Only start decoding after BOTH configuration AND first keyframe arrival
     if (!this.decoderConfigured) return;
+    if (!this.hasReceivedKeyframe && !isKeyframe) return;
+    
+    if (isKeyframe && !this.hasReceivedKeyframe) {
+      this.hasReceivedKeyframe = true;
+      console.log('[ScrcpyClient] First keyframe received, starting decode pipeline');
+    }
 
     try {
       this.decoder.decode(
