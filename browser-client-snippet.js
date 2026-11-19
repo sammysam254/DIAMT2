@@ -23,6 +23,7 @@ class ScrcpyDashboardClient {
 
     this.ws = null;
     this.decoder = null;
+    this.decoderConfigured = false;
     this.videoWidth = 1080;
     this.videoHeight = 1920;
     this.isMouseDown = false;
@@ -62,12 +63,8 @@ class ScrcpyDashboardClient {
       },
     });
 
-    // Configure for H.264 Baseline/Main profile with zero latency
-    this.decoder.configure({
-      codec: 'avc1.42002A', // H.264 Baseline Profile Level 4.2
-      optimizeForLatency: true,
-      hardwareAcceleration: 'prefer-hardware',
-    });
+    // Start unconfigured - will configure on first SPS arrival with correct codec
+    this.decoderConfigured = false;
   }
 
   /**
@@ -126,23 +123,58 @@ class ScrcpyDashboardClient {
 
     // Detect if chunk contains an IDR Keyframe (NAL type 5) or SPS (NAL type 7)
     let isKeyframe = false;
-    for (let i = 0; i < Math.min(data.length - 4, 128); i++) {
+    let spsNalUnit = null;
+    for (let i = 0; i < Math.min(data.length - 4, 256); i++) {
       if (data[i] === 0 && data[i + 1] === 0) {
+        let nalStart = -1;
         let nalByte = -1;
         if (data[i + 2] === 1) {
-          nalByte = data[i + 3];
+          nalStart = i + 3;
+          nalByte = data[nalStart];
         } else if (data[i + 2] === 0 && data[i + 3] === 1) {
-          nalByte = data[i + 4];
+          nalStart = i + 4;
+          nalByte = data[nalStart];
         }
         if (nalByte !== -1) {
           const nalType = nalByte & 0x1f;
-          if (nalType === 5 || nalType === 7) {
+          if (nalType === 5) {
             isKeyframe = true;
-            break;
+          }
+          if (nalType === 7 && !spsNalUnit) {
+            // Extract SPS NAL for codec detection
+            let nalEnd = nalStart + 1;
+            while (nalEnd < data.length - 3) {
+              if (data[nalEnd] === 0 && data[nalEnd + 1] === 0 && (data[nalEnd + 2] === 1 || (data[nalEnd + 2] === 0 && data[nalEnd + 3] === 1))) {
+                break;
+              }
+              nalEnd++;
+            }
+            spsNalUnit = data.slice(nalStart, nalEnd);
           }
         }
       }
     }
+
+    // Auto-configure decoder on first SPS arrival with device-specific codec string
+    if (spsNalUnit && !this.decoderConfigured && this.decoder.state === 'unconfigured') {
+      const codecString = this._parseSpsCodec(spsNalUnit);
+      if (codecString) {
+        try {
+          this.decoder.configure({
+            codec: codecString,
+            optimizeForLatency: true,
+            hardwareAcceleration: 'prefer-hardware',
+          });
+          this.decoderConfigured = true;
+          console.log(`[ScrcpyClient] Decoder configured with codec: ${codecString}`);
+        } catch (err) {
+          console.error('[ScrcpyClient] Failed to configure decoder with codec:', codecString, err);
+        }
+      }
+    }
+
+    // Only decode if configured
+    if (!this.decoderConfigured) return;
 
     try {
       this.decoder.decode(
@@ -155,6 +187,19 @@ class ScrcpyDashboardClient {
     } catch (err) {
       console.warn('[ScrcpyClient] Decode error:', err.message);
     }
+  }
+
+  /**
+   * Parse H.264 SPS NAL unit to generate codec string (avc1.PPCCLL)
+   * PP = profile_idc, CC = constraint flags, LL = level_idc
+   */
+  _parseSpsCodec(spsNalUnit) {
+    if (spsNalUnit.length < 4) return null;
+    const profileIdc = spsNalUnit[1];
+    const constraintFlags = spsNalUnit[2];
+    const levelIdc = spsNalUnit[3];
+    const codecString = `avc1.${profileIdc.toString(16).padStart(2, '0')}${constraintFlags.toString(16).padStart(2, '0')}${levelIdc.toString(16).padStart(2, '0')}`;
+    return codecString;
   }
 
   /**
