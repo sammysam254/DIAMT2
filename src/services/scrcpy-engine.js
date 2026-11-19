@@ -765,7 +765,7 @@ class ScrcpyEngine extends EventEmitter {
         proc.stderr.on('data', onData);
         setTimeout(() => {
           if (!isReady) { isReady = true; resolve(); }
-        }, 2200);
+        }, 4000);
       });
 
       proc.on('close', (code) => {
@@ -796,8 +796,8 @@ class ScrcpyEngine extends EventEmitter {
       if (!this.isRunning || !this._audioProc) return;
 
       // Small delay to ensure Android abstract socket is open
-      await new Promise(r => setTimeout(r, 200));
-      this.audioSocket = await this._connectOne(audioPort, 25);
+      await new Promise(r => setTimeout(r, 300));
+      this.audioSocket = await this._connectOne(audioPort, 50);
       this.audioSocket.setNoDelay(true);
       this._pipeAudioToClients(this.audioSocket, audioPort, codec, audioSource);
       logger.info(`[ScrcpyEngine ${this.serial}] Dedicated audio stream active on port ${audioPort}`);
