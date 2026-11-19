@@ -2134,7 +2134,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
         return; // Drop intermediate move events on buffer congestion
       }
       
-      // Send as BINARY for instant delivery (no JSON parsing overhead)
+      // Send BINARY for touch/key/text commands (instant, zero JSON overhead)
       if (data.type === 'touch') {
         const pressure = (data.pressure !== undefined) ? data.pressure : (data.action === 1 ? 0 : 0.5);
         ws.send(encodeTouchBinary(data.action, data.x, data.y, data.width, data.height, pressure));
@@ -2150,7 +2150,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
         const text = data.text || '';
         if (text) ws.send(encodeTextBinary(text));
       } else {
-        // Fallback to JSON for other control types (swipe, etc)
+        // Send JSON for control commands (request_keyframe, wake, swipe, etc)
         ws.send(JSON.stringify(data));
       }
     } else {
