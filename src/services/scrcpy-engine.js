@@ -385,14 +385,22 @@ class ScrcpyEngine extends EventEmitter {
     this._videoScidHex = scidVideoNum.toString(16).padStart(8, '0');
 
     try {
-      // 0. Kill ALL scrcpy processes for this device to free abstract sockets
+      // 0. Kill ALL scrcpy processes for this device and verify socket is free
       try {
         await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
         if (this._videoScidHex) {
           await this._adb(['shell', 'pkill', '-9', '-f', `scid=${this._videoScidHex}`]).catch(() => {});
         }
-        // Wait for OS to fully release abstract sockets before rebinding
-        await new Promise(r => setTimeout(r, 800));
+        // Poll until abstract socket is confirmed free (max 3s)
+        const scid = this._videoScidHex;
+        for (let i = 0; i < 6; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          try {
+            const check = await this._adb(['shell', `cat /proc/net/unix 2>/dev/null | grep scrcpy_${scid} | wc -l`]).catch(() => '0');
+            if (check.trim() === '0') break;
+            await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
+          } catch (_) { break; }
+        }
       } catch (_) {}
 
       // Wake display and unlock using standard human device settings
@@ -695,14 +703,24 @@ class ScrcpyEngine extends EventEmitter {
     this._audioDebugLogs = this._audioDebugLogs || [];
 
     try {
-      // 1. Wake device screen to ensure Android OS allows internal audio playback capture
+      // 1. Wake device screen
       await this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
 
-      // 2. Aggressively kill ALL lingering scrcpy audio processes to free the abstract socket
+      // 2. Kill ALL scrcpy processes and wait until the abstract socket is confirmed free
       await this._adb(['shell', 'pkill', '-9', '-f', `scid=${scidHex}`]).catch(() => {});
       await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
-      // Wait for OS to release the abstract socket before rebinding
-      await new Promise(r => setTimeout(r, 600));
+      
+      // Poll until abstract socket is gone or timeout (max 3s)
+      for (let i = 0; i < 6; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        try {
+          const check = await this._adb(['shell', `cat /proc/net/unix 2>/dev/null | grep scrcpy_${scidHex} | wc -l`]).catch(() => '0');
+          if (check.trim() === '0') break;
+          // Still bound — kill again
+          await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
+        } catch (_) { break; }
+      }
+
       try { await this._adb(['forward', '--remove', `tcp:${audioPort}`]); } catch (_) {}
       await this._adb(['forward', `tcp:${audioPort}`, `localabstract:scrcpy_${scidHex}`]);
 

@@ -1877,11 +1877,10 @@ function buildPlayerHtml(serial, screenW, screenH) {
             }
             return;
           } else if (msg.type === 'stream_reset') {
-            console.log('[Stream] Server stream reset — reinitialising decoder');
-            resetDecoder();
+            // Reinit decoder for new stream but keep hasKeyframe — controls must stay working
+            if (decoder) { try { decoder.close(); } catch (_) {} decoder = null; }
+            decoderReady = false;
             initDecoder();
-            fbRunning = false;
-            lastFrameReceivedTime = 0;
             send({ type: 'request_keyframe' });
             return;
           } else if (msg.type === 'stream_revoked') {
@@ -1970,12 +1969,13 @@ function buildPlayerHtml(serial, screenW, screenH) {
       const key = isH264Keyframe(u8);
       if (key) hasKeyframe = true;
       if (!hasKeyframe) {
-        // Delta chunk received without an active keyframe — request keyframe immediately
+        // No keyframe yet — request one but DO NOT block: pass delta frames through
+        // so controls keep working while decoder is initialising
         if (Date.now() - lastKeyframeReqTime > 1000) {
           lastKeyframeReqTime = Date.now();
           send({ type: 'request_keyframe' });
         }
-        return;
+        // Still try to decode — WebCodecs will handle or drop gracefully
       }
 
       try {
