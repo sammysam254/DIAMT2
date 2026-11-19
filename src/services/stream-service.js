@@ -1936,7 +1936,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
       const rawU8 = new Uint8Array(e.data);
       if (rawU8.length < 4) return;
 
-      // Handle tagged Audio binary frames — [0x41][codec][flags][payload] or [0x41][codec][payload]
+      // Handle tagged Audio binary frames — [0x41][codec][flags][payload]
       if (rawU8[0] === 0x41) {
         if (rawU8.length < 3) return;
         const codec = rawU8[1]; // 0x4F='O' opus, 0x43='C' aac, 0x52='R' raw
@@ -1949,11 +1949,11 @@ function buildPlayerHtml(serial, screenW, screenH) {
           payload = rawU8.subarray(2);
         }
 
-        if (codec === 0x4F) {        // Opus
+        if (codec === 0x4F) {        // Opus — primary codec, fully supported
           playOpusPacket(payload, isConfig);
-        } else if (codec === 0x43) { // AAC
-          playAacPacket(payload, isConfig);
-        } else {                     // Raw PCM
+        } else if (codec === 0x43) { // AAC — skip silently, server should not send this anymore
+          return;
+        } else {                     // Raw PCM fallback
           playRawPcm(payload);
         }
         return;

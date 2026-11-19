@@ -754,17 +754,13 @@ class ScrcpyEngine extends EventEmitter {
         }
         if (!this.isRunning || !this.enableAudio) return;
 
-        // Adaptive fallback ladder for pure internal digital audio:
-        // 1. opus (output) -> 2. aac (output) -> 3. raw (output)
-        // (Never fall back to room mic, preventing static/ambient noise and cross-talk between phones)
+        // If opus fails, skip aac (browser AAC WebCodecs is unreliable with scrcpy ADTS stream)
+        // Go straight to raw PCM which always works
         if (codec === 'opus') {
-          logger.info(`[ScrcpyAudio ${this.serial}] Falling back from opus to aac audio encoder...`);
-          setTimeout(() => this._startDedicatedAudioStream('aac', 'output'), 1000);
-        } else if (codec === 'aac') {
-          logger.info(`[ScrcpyAudio ${this.serial}] Falling back from aac to raw PCM audio...`);
+          logger.info(`[ScrcpyAudio ${this.serial}] Opus failed — falling back to raw PCM audio...`);
           setTimeout(() => this._startDedicatedAudioStream('raw', 'output'), 1000);
         } else {
-          // Cooldown and retry opus internal output
+          // raw failed too — cooldown and retry opus
           setTimeout(() => {
             if (this.isRunning && !this._audioProc) {
               this._startDedicatedAudioStream('opus', 'output');
@@ -790,9 +786,12 @@ class ScrcpyEngine extends EventEmitter {
         this._audioProc = null;
       }
       if (codec === 'opus' && this.isRunning) {
-        setTimeout(() => this._startDedicatedAudioStream('aac', 'playback'), 1500);
-      } else if (codec === 'aac' && this.isRunning) {
-        setTimeout(() => this._startDedicatedAudioStream('raw', 'playback'), 1500);
+        setTimeout(() => this._startDedicatedAudioStream('raw', 'output'), 1500);
+      } else if (codec === 'raw' && this.isRunning) {
+        // raw also failed, retry opus after cooldown
+        setTimeout(() => {
+          if (this.isRunning && !this._audioProc) this._startDedicatedAudioStream('opus', 'output');
+        }, 8000);
       }
     }
   }
