@@ -2207,7 +2207,8 @@ function buildPlayerHtml(serial, screenW, screenH) {
   window.addEventListener('pointerup', releasePointer);
 
   canvas.addEventListener('click', (e) => {
-    if (performance.now() - lastReleaseTime < 350) return;
+    // Skip click if pointerdown+up already sent the touch sequence
+    if (performance.now() - lastReleaseTime < 500) return;
     const c = coords(e);
     send({ type: 'tap', x: c.x, y: c.y, width: c.w, height: c.h });
   });
