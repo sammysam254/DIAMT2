@@ -342,25 +342,18 @@ class ScrcpyDashboardClient {
 
   /**
    * Attach touch and pointer listeners directly to the target canvas
-   * Uses requestAnimationFrame coalescing on move events to match native 60/120Hz display refresh
-   * and prevent network packet queue lag. DOWN and UP events fire immediately.
+   * Ultra-low latency mode: send move events immediately without rAF batching for instant response.
+   * DOWN and UP events fire immediately with zero delay.
    */
   _attachCanvasInputListeners() {
-    let pendingMove = null;
-    let moveRaf = null;
+    let lastMoveTime = 0;
+    const MOVE_THROTTLE = 8; // milliseconds between move events (120fps+ capable)
 
-    const flushPendingMove = () => {
-      if (pendingMove) {
-        this.sendTouchEvent(2, pendingMove.clientX, pendingMove.clientY, pendingMove.pressure);
-        pendingMove = null;
-      }
-      moveRaf = null;
-    };
-
-    const queueMove = (clientX, clientY, pressure = 1.0) => {
-      pendingMove = { clientX, clientY, pressure };
-      if (!moveRaf) {
-        moveRaf = requestAnimationFrame(flushPendingMove);
+    const sendMove = (clientX, clientY, pressure = 1.0) => {
+      const now = Date.now();
+      if (now - lastMoveTime >= MOVE_THROTTLE) {
+        this.sendTouchEvent(2, clientX, clientY, pressure);
+        lastMoveTime = now;
       }
     };
 
@@ -368,32 +361,25 @@ class ScrcpyDashboardClient {
     this.canvas.addEventListener('mousedown', (e) => {
       e.preventDefault();
       this.isMouseDown = true;
-      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = null; pendingMove = null; }
       this.sendTouchEvent(0, e.clientX, e.clientY); // 0 = DOWN (immediate)
     });
 
     window.addEventListener('mousemove', (e) => {
       if (!this.isMouseDown) return;
       e.preventDefault();
-      queueMove(e.clientX, e.clientY); // 2 = MOVE (rAF synchronized)
+      sendMove(e.clientX, e.clientY); // 2 = MOVE (throttled for smoothness)
     });
 
     window.addEventListener('mouseup', (e) => {
       if (!this.isMouseDown) return;
       e.preventDefault();
       this.isMouseDown = false;
-      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = null; }
-      if (pendingMove) {
-        this.sendTouchEvent(2, pendingMove.clientX, pendingMove.clientY, pendingMove.pressure);
-        pendingMove = null;
-      }
       this.sendTouchEvent(1, e.clientX, e.clientY); // 1 = UP (immediate)
     });
 
     // Touch Events for Mobile / Tablet rental clients
     this.canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
-      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = null; pendingMove = null; }
       if (e.touches.length > 0) {
         const touch = e.touches[0];
         this.sendTouchEvent(0, touch.clientX, touch.clientY, touch.force || 1.0);
@@ -404,13 +390,12 @@ class ScrcpyDashboardClient {
       e.preventDefault();
       if (e.touches.length > 0) {
         const touch = e.touches[0];
-        queueMove(touch.clientX, touch.clientY, touch.force || 1.0);
+        sendMove(touch.clientX, touch.clientY, touch.force || 1.0);
       }
     }, { passive: false });
 
     this.canvas.addEventListener('touchend', (e) => {
       e.preventDefault();
-      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = null; }
       if (e.changedTouches.length > 0) {
         const touch = e.changedTouches[0];
         this.sendTouchEvent(1, touch.clientX, touch.clientY, 0);

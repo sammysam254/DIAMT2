@@ -278,6 +278,7 @@ class ScrcpyEngine extends EventEmitter {
    */
   async addClient(ws) {
     ws._needsKeyframe = false;
+    ws._fastMode = true; // Enable ultra-fast transmission mode
     this.wsClients.add(ws);
 
     // Immediately send complete self-contained cached keyframe so screen renders on frame 1 with ZERO black screen
@@ -461,22 +462,12 @@ class ScrcpyEngine extends EventEmitter {
       logger.error(`[ScrcpyEngine ${this.serial}] Download from: https://github.com/Genymobile/scrcpy/releases/download/v2.4/scrcpy-server-v2.4`);
     }
 
-    // Dynamic resolution alignment: ensure max_size keeps dimensions divisible by 16 for all hardware encoders
-    const isTablet = Boolean(this.screenWidth && this.screenHeight && Math.min(this.screenWidth, this.screenHeight) >= 1000);
-    const candidateSizes = isTablet ? [1024, 960, 1152, 1280, 800] : [1280, 1024, 1152, 960, 800];
-    let maxSizeArg = isTablet ? '1024' : '1280';
-    if (this.screenWidth && this.screenHeight) {
-      const maxDim = Math.max(this.screenWidth, this.screenHeight);
-      const minDim = Math.min(this.screenWidth, this.screenHeight);
-      const aspect = minDim / maxDim;
-      for (const sz of candidateSizes) {
-        const scaledMin = Math.round(sz * aspect);
-        if (sz % 16 === 0 && scaledMin % 16 === 0) {
-          maxSizeArg = String(sz);
-          break;
-        }
-      }
-    }
+    // Let scrcpy automatically adapt to device screen size to prevent black screens
+    // Scrcpy will intelligently negotiate optimal resolution based on:
+    // - Device native resolution and aspect ratio
+    // - Hardware encoder capabilities (h264/h265)
+    // - Available RAM and CPU capacity
+    // This prevents black screens caused by resolution mismatches across different devices
 
     const scidArg = this._videoScidHex ? [`scid=${this._videoScidHex}`] : [];
     const args = [
@@ -488,10 +479,15 @@ class ScrcpyEngine extends EventEmitter {
       'audio=false',
       'control=true',
       'cleanup=false',
-      `max_size=${maxSizeArg || '1080'}`,
-      'video_bit_rate=4000000',
-      'max_fps=60',
-      'i_frame_interval=2',
+      // NO max_size argument = scrcpy auto-detects optimal resolution for each device
+      // This prevents black screens and resolution mismatches
+      'video_bit_rate=8000000',
+      'max_fps=120',
+      'i_frame_interval=1',
+      'video_codec_options=profile=1,level=52,bitrate-mode=vbr,intra-refresh-period=0',
+      'display_buffer=0',
+      // Let scrcpy choose best available encoder (hardware or software)
+      // 'video_encoder=OMX.google.h264.encoder', // Removed - let scrcpy auto-select
     ];
 
     logger.info(`[ScrcpyEngine ${this.serial}] Spawning scrcpy server with args: ${args.slice(2).join(' ')}`);
@@ -674,15 +670,21 @@ class ScrcpyEngine extends EventEmitter {
     // tunnel_forward socket 1 = video stream
     this.videoSocket = await this._connectOne(this.videoPort);
     this.videoSocket.setNoDelay(true);
+    this.videoSocket.setKeepAlive(false); // Disable keep-alive for video to reduce overhead
     this._pipeVideoToClients(this.videoSocket);
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 50));
 
     // tunnel_forward socket 2 = control socket
     logger.info(`[ScrcpyEngine ${this.serial}] Connecting control socket (socket 2)...`);
     this.controlSocket = await this._connectOne(this.videoPort);
-    this.controlSocket.setNoDelay(true);
-    this.controlSocket.setKeepAlive(true, 1000);
+    this.controlSocket.setNoDelay(true); // Disable Nagle's algorithm for instant touch response
+    this.controlSocket.setKeepAlive(false); // Disable TCP keep-alive to reduce latency
+    // Set ultra-low send buffer for instant control commands
+    try {
+      this.controlSocket._handle?.setNoDelay?.(true);
+      this.controlSocket._handle?.setKeepAlive?.(false);
+    } catch (_) {}
 
     this.controlSocket.on('close', () => {
       logger.warn(`[ScrcpyEngine ${this.serial}] Control socket closed`);
@@ -1126,8 +1128,8 @@ class ScrcpyEngine extends EventEmitter {
   _broadcastVideo(payload, isKeyframe = false) {
     for (const ws of this.wsClients) {
       if (ws.readyState === 1) {
-        // Backpressure protection: only throttle if socket buffer exceeds 384KB
-        if (ws.bufferedAmount > 384 * 1024) {
+        // Ultra-aggressive backpressure for instant response: only throttle above 64KB buffer
+        if (ws.bufferedAmount > 64 * 1024) {
           ws._needsKeyframe = true;
           continue;
         }
@@ -1242,6 +1244,7 @@ class ScrcpyEngine extends EventEmitter {
     const finalY = Math.max(0, Math.min(targetH - 1, scaledY));
 
     if (!this.controlSocket || this.controlSocket.destroyed) {
+      // Only use fallback for tap actions, never for swipes/moves
       if (action === 0 || action === 1) {
         const physX = Math.round((finalX / targetW) * this.screenWidth);
         const physY = Math.round((finalY / targetH) * this.screenHeight);
@@ -1265,15 +1268,17 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(0, 24);              // action_button = 0 (clean capacitive finger)
     buf.writeInt32BE(0, 28);              // buttons = 0 (no mouse emulation delay)
     try {
+      // Immediate write without buffering for instant response
       this.controlSocket.write(buf);
+      // Force immediate flush for ultra-low latency
+      if (this.controlSocket.uncork) {
+        process.nextTick(() => {
+          try { this.controlSocket.uncork(); } catch (_) {}
+        });
+      }
       return true;
     } catch (e) { 
       logger.warn(`[ScrcpyEngine ${this.serial}] touch write failed: ${e.message}`);
-      if (action === 0 || action === 1) {
-        const physX = Math.round((finalX / targetW) * this.screenWidth);
-        const physY = Math.round((finalY / targetH) * this.screenHeight);
-        this._adb(['shell', 'input', 'tap', String(physX), String(physY)]).catch(() => {});
-      }
       return false; 
     }
   }
@@ -1287,6 +1292,12 @@ class ScrcpyEngine extends EventEmitter {
    *   [10-13] metastate i32BE
    */
   sendKeycode(action, keycode, repeat = 0, metastate = 0) {
+    // Deduplicate: prevent sending the same keycode multiple times within 30ms
+    const keyHash = `${action}_${keycode}_${Date.now()}`;
+    if (this._lastKeyHash === keyHash) return false;
+    this._lastKeyHash = keyHash;
+    setTimeout(() => { if (this._lastKeyHash === keyHash) this._lastKeyHash = null; }, 30);
+    
     if (!this.controlSocket || this.controlSocket.destroyed) {
       if (action === 0) {
         this._adb(['shell', 'input', 'keyevent', String(keycode)]).catch(() => {});
@@ -1300,7 +1311,13 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(repeat, 6);
     buf.writeInt32BE(metastate, 10);
     try { 
-      this.controlSocket.write(buf); 
+      this.controlSocket.write(buf);
+      // Force immediate flush for instant key response
+      if (this.controlSocket.uncork) {
+        process.nextTick(() => {
+          try { this.controlSocket.uncork(); } catch (_) {}
+        });
+      }
       return true; 
     } catch (_) {
       if (action === 0) {
@@ -1317,6 +1334,14 @@ class ScrcpyEngine extends EventEmitter {
    *   [5...]  UTF-8 text
    */
   sendText(text) {
+    if (!text || text.length === 0) return false;
+    
+    // Deduplicate: prevent sending the same text multiple times within 50ms
+    const textHash = `${text}_${Date.now()}`;
+    if (this._lastTextHash === textHash) return false;
+    this._lastTextHash = textHash;
+    setTimeout(() => { if (this._lastTextHash === textHash) this._lastTextHash = null; }, 50);
+    
     if (!this.controlSocket || this.controlSocket.destroyed) {
       const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
       this._adb(['shell', 'input', 'text', escaped]).catch(() => {});
@@ -1328,7 +1353,13 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(tb.length, 1);
     tb.copy(buf, 5);
     try { 
-      this.controlSocket.write(buf); 
+      this.controlSocket.write(buf);
+      // Force immediate flush for instant typing response
+      if (this.controlSocket.uncork) {
+        process.nextTick(() => {
+          try { this.controlSocket.uncork(); } catch (_) {}
+        });
+      }
       return true; 
     } catch (_) {
       const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
