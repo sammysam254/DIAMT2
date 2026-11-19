@@ -136,6 +136,7 @@ class ScrcpyDashboardClient {
     // Detect if chunk contains an IDR Keyframe (NAL type 5) or SPS (NAL type 7)
     let isKeyframe = false;
     let spsNalUnit = null;
+    let nalTypes = [];
     for (let i = 0; i < Math.min(data.length - 4, 256); i++) {
       if (data[i] === 0 && data[i + 1] === 0) {
         let nalStart = -1;
@@ -149,6 +150,7 @@ class ScrcpyDashboardClient {
         }
         if (nalByte !== -1) {
           const nalType = nalByte & 0x1f;
+          nalTypes.push(nalType);
           if (nalType === 5) {
             isKeyframe = true;
           }
@@ -166,6 +168,8 @@ class ScrcpyDashboardClient {
         }
       }
     }
+
+    console.log(`[DEBUG] Packet NAL types: [${nalTypes.join(',')}] isKeyframe=${isKeyframe} configured=${this.decoderConfigured} hasKeyframe=${this.hasReceivedKeyframe}`);
 
     // Auto-configure decoder on first SPS arrival with device-specific codec string
     if (spsNalUnit && !this.decoderConfigured && this.decoder.state === 'unconfigured') {
@@ -189,10 +193,16 @@ class ScrcpyDashboardClient {
     }
 
     // CRITICAL: Only start decoding after BOTH configuration AND first keyframe arrival
-    if (!this.decoderConfigured) return;
+    if (!this.decoderConfigured) {
+      console.log('[DEBUG] Skipping - not configured yet');
+      return;
+    }
     if (!this.hasReceivedKeyframe) {
       // Wait for first keyframe after configuration
-      if (!isKeyframe) return;
+      if (!isKeyframe) {
+        console.log('[DEBUG] Skipping - waiting for first keyframe');
+        return;
+      }
       this.hasReceivedKeyframe = true;
       console.log('[ScrcpyClient] First keyframe received, starting decode pipeline');
     }
@@ -206,7 +216,7 @@ class ScrcpyDashboardClient {
         })
       );
     } catch (err) {
-      console.warn('[ScrcpyClient] Decode error:', err.message);
+      console.error('[ScrcpyClient] Decode error:', err.message, 'NAL types:', nalTypes);
     }
   }
 
