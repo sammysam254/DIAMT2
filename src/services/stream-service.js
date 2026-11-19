@@ -37,6 +37,7 @@ function findActiveSession(reqUdid, fallbackSerial) {
   if (!reqUdid) return activeServers.values().next().value || null;
 
   const raw = String(reqUdid).trim();
+
   // 1. Direct exact match
   if (activeServers.has(raw)) return activeServers.get(raw);
 
@@ -46,19 +47,14 @@ function findActiveSession(reqUdid, fallbackSerial) {
     if (k.toLowerCase() === lower) return v;
   }
 
-  // 3. OCR-safe normalized match (e.g. 0B0FP... vs OBOFP... where 0/O and 1/I/L are interchangeable)
+  // 3. OCR-safe normalized match (0/O and 1/I/L interchangeable)
   const normalize = s => s.toUpperCase().replace(/0/g, 'O').replace(/[1L]/g, 'I');
   const normReq = normalize(raw);
   for (const [k, v] of activeServers.entries()) {
     if (normalize(k) === normReq) return v;
   }
 
-  // 4. Substring / partial match
-  for (const [k, v] of activeServers.entries()) {
-    if (k.includes(raw) || raw.includes(k)) return v;
-  }
-
-  // 5. Fallback to fallbackSerial if valid
+  // 4. Fallback to fallbackSerial if valid — NO substring matching (causes wrong device routing)
   if (fallbackSerial && activeServers.has(fallbackSerial)) {
     return activeServers.get(fallbackSerial);
   }
