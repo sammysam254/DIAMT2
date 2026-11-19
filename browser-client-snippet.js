@@ -179,6 +179,8 @@ class ScrcpyDashboardClient {
           });
           this.decoderConfigured = true;
           console.log(`[ScrcpyClient] Decoder configured with codec: ${codecString}`);
+          // Skip this packet - it may contain frames before encoder is stable
+          return;
         } catch (err) {
           console.error('[ScrcpyClient] Failed to configure decoder with codec:', codecString, err);
           return;
