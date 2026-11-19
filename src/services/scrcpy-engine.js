@@ -479,15 +479,9 @@ class ScrcpyEngine extends EventEmitter {
       'audio=false',
       'control=true',
       'cleanup=false',
-      // NO max_size argument = scrcpy auto-detects optimal resolution for each device
-      // This prevents black screens and resolution mismatches
       'video_bit_rate=8000000',
-      'max_fps=120',
-      'i_frame_interval=1',
-      'video_codec_options=profile=1,level=52,bitrate-mode=vbr,intra-refresh-period=0',
-      'display_buffer=0',
-      // Let scrcpy choose best available encoder (hardware or software)
-      // 'video_encoder=OMX.google.h264.encoder', // Removed - let scrcpy auto-select
+      'max_fps=60',
+      'i_frame_interval=2',
     ];
 
     logger.info(`[ScrcpyEngine ${this.serial}] Spawning scrcpy server with args: ${args.slice(2).join(' ')}`);
@@ -670,7 +664,6 @@ class ScrcpyEngine extends EventEmitter {
     // tunnel_forward socket 1 = video stream
     this.videoSocket = await this._connectOne(this.videoPort);
     this.videoSocket.setNoDelay(true);
-    this.videoSocket.setKeepAlive(false); // Disable keep-alive for video to reduce overhead
     this._pipeVideoToClients(this.videoSocket);
 
     await new Promise(r => setTimeout(r, 50));
@@ -678,32 +671,7 @@ class ScrcpyEngine extends EventEmitter {
     // tunnel_forward socket 2 = control socket
     logger.info(`[ScrcpyEngine ${this.serial}] Connecting control socket (socket 2)...`);
     this.controlSocket = await this._connectOne(this.videoPort);
-    
-    // Ultra-aggressive socket optimization for instant control response
-    this.controlSocket.setNoDelay(true); // Disable Nagle's algorithm
-    this.controlSocket.setKeepAlive(false); // No keep-alive overhead
-    
-    // Force smallest possible TCP buffer sizes for zero-latency transmission
-    try {
-      if (this.controlSocket._handle) {
-        this.controlSocket._handle.setNoDelay(true);
-        this.controlSocket._handle.setKeepAlive(false);
-      }
-    } catch (_) {}
-
-    // Send test packet immediately to verify socket is ready
-    const testBuf = Buffer.alloc(14);
-    testBuf.writeUInt8(0, 0); // INJECT_KEYCODE
-    testBuf.writeUInt8(1, 1); // UP (do nothing)
-    testBuf.writeInt32BE(0, 2); // keycode 0
-    testBuf.writeInt32BE(0, 6); // repeat 0
-    testBuf.writeInt32BE(0, 10); // metastate 0
-    try {
-      this.controlSocket.write(testBuf);
-      logger.info(`[ScrcpyEngine ${this.serial}] Control socket verified and ready`);
-    } catch (e) {
-      logger.warn(`[ScrcpyEngine ${this.serial}] Control socket test failed: ${e.message}`);
-    }
+    this.controlSocket.setNoDelay(true);
 
     this.controlSocket.on('close', () => {
       logger.warn(`[ScrcpyEngine ${this.serial}] Control socket closed`);
