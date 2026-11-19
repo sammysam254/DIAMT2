@@ -1874,11 +1874,10 @@ function buildPlayerHtml(serial, screenW, screenH) {
     };
 
     ws.onmessage = function(e) {
-      // JSON control messages (stream_reset, resolution_change, heartbeat, etc.)
-      if (typeof e.data === 'string' || e.data instanceof ArrayBuffer && e.data.byteLength > 0 && new Uint8Array(e.data)[0] === 0x7B) {
+      // JSON control messages arrive as strings; video/audio arrive as ArrayBuffer
+      if (typeof e.data === 'string') {
         try {
-          const txt = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
-          const msg = JSON.parse(txt);
+          const msg = JSON.parse(e.data);
           if (msg.type === 'heartbeat') {
             send({ type: 'pong' });
             return;

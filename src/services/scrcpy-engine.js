@@ -385,12 +385,14 @@ class ScrcpyEngine extends EventEmitter {
     this._videoScidHex = scidVideoNum.toString(16).padStart(8, '0');
 
     try {
-      // 0. Clean up only this device's scrcpy processes without disturbing any other phones
+      // 0. Kill ALL scrcpy processes for this device to free abstract sockets
       try {
+        await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
         if (this._videoScidHex) {
           await this._adb(['shell', 'pkill', '-9', '-f', `scid=${this._videoScidHex}`]).catch(() => {});
         }
-        await new Promise(r => setTimeout(r, 150));
+        // Wait for OS to fully release abstract sockets before rebinding
+        await new Promise(r => setTimeout(r, 800));
       } catch (_) {}
 
       // Wake display and unlock using standard human device settings
@@ -696,8 +698,11 @@ class ScrcpyEngine extends EventEmitter {
       // 1. Wake device screen to ensure Android OS allows internal audio playback capture
       await this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
 
-      // 2. Clean up any lingering zombie audio processes for this device session
+      // 2. Aggressively kill ALL lingering scrcpy audio processes to free the abstract socket
       await this._adb(['shell', 'pkill', '-9', '-f', `scid=${scidHex}`]).catch(() => {});
+      await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
+      // Wait for OS to release the abstract socket before rebinding
+      await new Promise(r => setTimeout(r, 600));
       try { await this._adb(['forward', '--remove', `tcp:${audioPort}`]); } catch (_) {}
       await this._adb(['forward', `tcp:${audioPort}`, `localabstract:scrcpy_${scidHex}`]);
 
