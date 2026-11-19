@@ -2025,78 +2025,21 @@ function buildPlayerHtml(serial, screenW, screenH) {
     // Disabled
   }
 
-  // ── Control: WS-only, never fetch ───────────────────────────────────────
+  // ── Control: WS-only, JSON messages to server handleControl ───────────────
   const ctrlQueue = [];
   function flushQueue() {
     while (ctrlQueue.length && ws && ws.readyState === 1)
       ws.send(JSON.stringify(ctrlQueue.shift()));
   }
-  // Binary packet encoder for instant scrcpy control (zero JSON overhead)
-  function encodeTouchBinary(action, x, y, w, h, pressure) {
-    const buf = new ArrayBuffer(32);
-    const view = new DataView(buf);
-    view.setUint8(0, 2); // INJECT_TOUCH_EVENT
-    view.setUint8(1, action); // 0=DOWN, 1=UP, 2=MOVE
-    view.setBigInt64(2, -2n, false); // Generic finger pointer ID
-    view.setInt32(10, Math.round(x), false);
-    view.setInt32(14, Math.round(y), false);
-    view.setUint16(18, Math.round(w), false);
-    view.setUint16(20, Math.round(h), false);
-    view.setUint16(22, Math.round(pressure * 65535), false);
-    view.setInt32(24, 0, false); // action_button
-    view.setInt32(28, 0, false); // buttons
-    return buf;
-  }
-
-  function encodeKeycodeBinary(action, keycode) {
-    const buf = new ArrayBuffer(14);
-    const view = new DataView(buf);
-    view.setUint8(0, 0); // INJECT_KEYCODE
-    view.setUint8(1, action); // 0=DOWN, 1=UP
-    view.setInt32(2, keycode, false);
-    view.setInt32(6, 0, false); // repeat
-    view.setInt32(10, 0, false); // metastate
-    return buf;
-  }
-
-  function encodeTextBinary(text) {
-    const encoder = new TextEncoder();
-    const textBytes = encoder.encode(text);
-    const buf = new ArrayBuffer(5 + textBytes.length);
-    const view = new DataView(buf);
-    view.setUint8(0, 1); // INJECT_TEXT
-    view.setInt32(1, textBytes.length, false);
-    new Uint8Array(buf, 5).set(textBytes);
-    return buf;
-  }
 
   function send(data) {
     if (ws && ws.readyState === 1) {
       if (data.type === 'touch' && data.action === 2 && ws.bufferedAmount > 8192) {
-        return; // Drop intermediate move events on buffer congestion
+        return;
       }
-      
-      // Send BINARY for touch/key/text commands (instant, zero JSON overhead)
-      if (data.type === 'touch') {
-        const pressure = (data.pressure !== undefined) ? data.pressure : (data.action === 1 ? 0 : 0.5);
-        ws.send(encodeTouchBinary(data.action, data.x, data.y, data.width, data.height, pressure));
-      } else if (data.type === 'code' || data.type === 'key') {
-        const keycode = data.code || data.keycode || 0;
-        // Send keydown immediately
-        ws.send(encodeKeycodeBinary(0, keycode));
-        // Send keyup after 50ms
-        setTimeout(() => {
-          if (ws && ws.readyState === 1) ws.send(encodeKeycodeBinary(1, keycode));
-        }, 50);
-      } else if (data.type === 'text') {
-        const text = data.text || '';
-        if (text) ws.send(encodeTextBinary(text));
-      } else {
-        // Send JSON for control commands (request_keyframe, wake, swipe, etc)
-        ws.send(JSON.stringify(data));
-      }
+      ws.send(JSON.stringify(data));
     } else {
-      if (data.type === 'touch' && data.action === 2) return; // drop stale moves
+      if (data.type === 'touch' && data.action === 2) return;
       ctrlQueue.push(data);
       if (ctrlQueue.length > 8) ctrlQueue.splice(0, ctrlQueue.length - 8);
     }
@@ -2680,20 +2623,7 @@ async function startStreamServer(serial, port, aliasSerial) {
 
     ws.on('message', (msg) => {
       try {
-        const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-
-        // Distinguish binary scrcpy packets from JSON messages by first byte
-        // JSON always starts with '{' (0x7B); scrcpy packets start with 0, 1, or 2
-        if (buf.length > 0 && buf[0] !== 0x7B) {
-          // Binary scrcpy control packet — forward directly to control socket
-          if (effectiveWsEngine && effectiveWsEngine.controlSocket && !effectiveWsEngine.controlSocket.destroyed) {
-            effectiveWsEngine.controlSocket.write(buf);
-          }
-          return;
-        }
-
-        // JSON control message
-        const data = JSON.parse(buf.toString());
+        const data = JSON.parse(msg.toString());
         if (data.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong', time: Date.now() }));
           return;
@@ -2702,12 +2632,8 @@ async function startStreamServer(serial, port, aliasSerial) {
           return;
         }
         if (data.type === 'request_keyframe') {
-          // Send SPS/PPS config so decoder can initialize cleanly
           effectiveWsEngine.sendKeyframeToClient(ws);
           return;
-        }
-        if (data.type === 'wake' || data.type === 'refresh') {
-          // Forwarded to handleControl below
         }
         handleControl(data.type, data, effectiveWsSerial, effectiveWsEngine);
       } catch (_) {}
