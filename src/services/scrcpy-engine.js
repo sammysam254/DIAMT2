@@ -678,13 +678,32 @@ class ScrcpyEngine extends EventEmitter {
     // tunnel_forward socket 2 = control socket
     logger.info(`[ScrcpyEngine ${this.serial}] Connecting control socket (socket 2)...`);
     this.controlSocket = await this._connectOne(this.videoPort);
-    this.controlSocket.setNoDelay(true); // Disable Nagle's algorithm for instant touch response
-    this.controlSocket.setKeepAlive(false); // Disable TCP keep-alive to reduce latency
-    // Set ultra-low send buffer for instant control commands
+    
+    // Ultra-aggressive socket optimization for instant control response
+    this.controlSocket.setNoDelay(true); // Disable Nagle's algorithm
+    this.controlSocket.setKeepAlive(false); // No keep-alive overhead
+    
+    // Force smallest possible TCP buffer sizes for zero-latency transmission
     try {
-      this.controlSocket._handle?.setNoDelay?.(true);
-      this.controlSocket._handle?.setKeepAlive?.(false);
+      if (this.controlSocket._handle) {
+        this.controlSocket._handle.setNoDelay(true);
+        this.controlSocket._handle.setKeepAlive(false);
+      }
     } catch (_) {}
+
+    // Send test packet immediately to verify socket is ready
+    const testBuf = Buffer.alloc(14);
+    testBuf.writeUInt8(0, 0); // INJECT_KEYCODE
+    testBuf.writeUInt8(1, 1); // UP (do nothing)
+    testBuf.writeInt32BE(0, 2); // keycode 0
+    testBuf.writeInt32BE(0, 6); // repeat 0
+    testBuf.writeInt32BE(0, 10); // metastate 0
+    try {
+      this.controlSocket.write(testBuf);
+      logger.info(`[ScrcpyEngine ${this.serial}] Control socket verified and ready`);
+    } catch (e) {
+      logger.warn(`[ScrcpyEngine ${this.serial}] Control socket test failed: ${e.message}`);
+    }
 
     this.controlSocket.on('close', () => {
       logger.warn(`[ScrcpyEngine ${this.serial}] Control socket closed`);
@@ -1268,15 +1287,8 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(0, 24);              // action_button = 0 (clean capacitive finger)
     buf.writeInt32BE(0, 28);              // buttons = 0 (no mouse emulation delay)
     try {
-      // Immediate write without buffering for instant response
-      this.controlSocket.write(buf);
-      // Force immediate flush for ultra-low latency
-      if (this.controlSocket.uncork) {
-        process.nextTick(() => {
-          try { this.controlSocket.uncork(); } catch (_) {}
-        });
-      }
-      return true;
+      // Immediate write without any buffering
+      return this.controlSocket.write(buf);
     } catch (e) { 
       logger.warn(`[ScrcpyEngine ${this.serial}] touch write failed: ${e.message}`);
       return false; 
@@ -1292,12 +1304,6 @@ class ScrcpyEngine extends EventEmitter {
    *   [10-13] metastate i32BE
    */
   sendKeycode(action, keycode, repeat = 0, metastate = 0) {
-    // Deduplicate: prevent sending the same keycode multiple times within 30ms
-    const keyHash = `${action}_${keycode}_${Date.now()}`;
-    if (this._lastKeyHash === keyHash) return false;
-    this._lastKeyHash = keyHash;
-    setTimeout(() => { if (this._lastKeyHash === keyHash) this._lastKeyHash = null; }, 30);
-    
     if (!this.controlSocket || this.controlSocket.destroyed) {
       if (action === 0) {
         this._adb(['shell', 'input', 'keyevent', String(keycode)]).catch(() => {});
@@ -1311,14 +1317,7 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(repeat, 6);
     buf.writeInt32BE(metastate, 10);
     try { 
-      this.controlSocket.write(buf);
-      // Force immediate flush for instant key response
-      if (this.controlSocket.uncork) {
-        process.nextTick(() => {
-          try { this.controlSocket.uncork(); } catch (_) {}
-        });
-      }
-      return true; 
+      return this.controlSocket.write(buf);
     } catch (_) {
       if (action === 0) {
         this._adb(['shell', 'input', 'keyevent', String(keycode)]).catch(() => {});
@@ -1336,12 +1335,6 @@ class ScrcpyEngine extends EventEmitter {
   sendText(text) {
     if (!text || text.length === 0) return false;
     
-    // Deduplicate: prevent sending the same text multiple times within 50ms
-    const textHash = `${text}_${Date.now()}`;
-    if (this._lastTextHash === textHash) return false;
-    this._lastTextHash = textHash;
-    setTimeout(() => { if (this._lastTextHash === textHash) this._lastTextHash = null; }, 50);
-    
     if (!this.controlSocket || this.controlSocket.destroyed) {
       const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
       this._adb(['shell', 'input', 'text', escaped]).catch(() => {});
@@ -1353,14 +1346,7 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(tb.length, 1);
     tb.copy(buf, 5);
     try { 
-      this.controlSocket.write(buf);
-      // Force immediate flush for instant typing response
-      if (this.controlSocket.uncork) {
-        process.nextTick(() => {
-          try { this.controlSocket.uncork(); } catch (_) {}
-        });
-      }
-      return true; 
+      return this.controlSocket.write(buf);
     } catch (_) {
       const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
       this._adb(['shell', 'input', 'text', escaped]).catch(() => {});

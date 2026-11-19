@@ -238,7 +238,10 @@ class ScrcpyDashboardClient {
    *   [28..31] buttons: i32BE (1 on DOWN/MOVE, 0 on UP)
    */
   sendTouchEvent(action, clientX, clientY, pressure = 1.0) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[ScrcpyClient] WebSocket not ready, touch ignored');
+      return;
+    }
 
     // Scale canvas client coordinates to internal device resolution
     const rect = this.canvas.getBoundingClientRect();
@@ -263,7 +266,11 @@ class ScrcpyDashboardClient {
     view.setInt32(24, 0, false);              // action_button = 0 (native touchscreen finger)
     view.setInt32(28, 0, false);              // buttons = 0 (direct touch, zero mouse emulation delay)
 
-    this.ws.send(buffer);
+    try {
+      this.ws.send(buffer);
+    } catch (e) {
+      console.error('[ScrcpyClient] Touch send failed:', e);
+    }
   }
 
   /**
