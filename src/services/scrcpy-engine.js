@@ -491,7 +491,7 @@ class ScrcpyEngine extends EventEmitter {
       'cleanup=false',
       'video_bit_rate=8000000',
       'max_fps=60',
-      'i_frame_interval=2',
+      'i_frame_interval=1',
     ];
 
     logger.info(`[ScrcpyEngine ${this.serial}] Spawning scrcpy server with args: ${args.slice(2).join(' ')}`);
