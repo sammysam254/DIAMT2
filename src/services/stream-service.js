@@ -2738,19 +2738,20 @@ async function startStreamServer(serial, port, aliasSerial) {
 
     ws.on('message', (msg) => {
       try {
-        // Handle binary control messages (direct scrcpy protocol from browser)
-        if (Buffer.isBuffer(msg) || msg instanceof ArrayBuffer || msg instanceof Uint8Array) {
-          const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-          
-          // Forward binary control packets directly to scrcpy control socket
+        const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+
+        // Distinguish binary scrcpy packets from JSON messages by first byte
+        // JSON always starts with '{' (0x7B); scrcpy packets start with 0, 1, or 2
+        if (buf.length > 0 && buf[0] !== 0x7B) {
+          // Binary scrcpy control packet — forward directly to control socket
           if (effectiveWsEngine && effectiveWsEngine.controlSocket && !effectiveWsEngine.controlSocket.destroyed) {
             effectiveWsEngine.controlSocket.write(buf);
           }
           return;
         }
 
-        // Handle JSON control messages (legacy format)
-        const data = JSON.parse(msg.toString());
+        // JSON control message
+        const data = JSON.parse(buf.toString());
         if (data.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong', time: Date.now() }));
           return;
