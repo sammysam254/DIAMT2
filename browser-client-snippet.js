@@ -187,11 +187,10 @@ class ScrcpyDashboardClient {
     }
 
     // CRITICAL: Only start decoding after BOTH configuration AND first keyframe arrival
-    // Wait for decoder to be fully configured (not just decoderConfigured flag)
-    if (this.decoder.state !== 'configured') return;
-    if (!this.hasReceivedKeyframe && !isKeyframe) return;
-    
-    if (isKeyframe && !this.hasReceivedKeyframe) {
+    if (!this.decoderConfigured) return;
+    if (!this.hasReceivedKeyframe) {
+      // Wait for first keyframe after configuration
+      if (!isKeyframe) return;
       this.hasReceivedKeyframe = true;
       console.log('[ScrcpyClient] First keyframe received, starting decode pipeline');
     }
