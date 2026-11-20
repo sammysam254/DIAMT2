@@ -277,14 +277,18 @@ class ScrcpyEngine extends EventEmitter {
    * and capture an instant live snapshot so the screen displays immediately with ZERO black screen.
    */
   async addClient(ws) {
-    ws._needsKeyframe = false;
-    ws._fastMode = true; // Enable ultra-fast transmission mode
     this.wsClients.add(ws);
 
-    // Immediately send complete self-contained cached keyframe so screen renders on frame 1 with ZERO black screen
-    if (this._keyframeBuffer && ws.readyState === 1) {
+    const now = Date.now();
+    const isFresh = this._keyframeBuffer && this._keyframeTime && (now - this._keyframeTime < 500);
+
+    if (isFresh && ws.readyState === 1) {
+      ws._needsKeyframe = false;
       try { ws.send(this._keyframeBuffer, { binary: true }); } catch (_) {}
     } else {
+      // Require fresh real keyframe from encoder before sending delta frames
+      // to avoid decoding delta chunks against out-of-sync reference frames (gray shearing)
+      ws._needsKeyframe = true;
       if (this._configPacket && ws.readyState === 1) {
         try { ws.send(this._configPacket, { binary: true }); } catch (_) {}
       }
@@ -333,11 +337,14 @@ class ScrcpyEngine extends EventEmitter {
 
   sendKeyframeToClient(ws) {
     if (!ws || ws.readyState !== 1) return;
-    ws._needsKeyframe = false;
+    const now = Date.now();
+    const isFresh = this._keyframeBuffer && this._keyframeTime && (now - this._keyframeTime < 500);
 
-    if (this._keyframeBuffer) {
+    if (isFresh) {
+      ws._needsKeyframe = false;
       try { ws.send(this._keyframeBuffer, { binary: true }); } catch (_) {}
     } else {
+      ws._needsKeyframe = true;
       if (this._configPacket) {
         try { ws.send(this._configPacket, { binary: true }); } catch (_) {}
       }
@@ -385,22 +392,12 @@ class ScrcpyEngine extends EventEmitter {
     this._videoScidHex = scidVideoNum.toString(16).padStart(8, '0');
 
     try {
-      // 0. Kill ALL scrcpy processes for this device and verify socket is free
+      // 0. Clean up only this device's scrcpy processes without disturbing any other phones
       try {
-        await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
         if (this._videoScidHex) {
           await this._adb(['shell', 'pkill', '-9', '-f', `scid=${this._videoScidHex}`]).catch(() => {});
         }
-        // Poll until abstract socket is confirmed free (max 3s)
-        const scid = this._videoScidHex;
-        for (let i = 0; i < 6; i++) {
-          await new Promise(r => setTimeout(r, 500));
-          try {
-            const check = await this._adb(['shell', `cat /proc/net/unix 2>/dev/null | grep scrcpy_${scid} | wc -l`]).catch(() => '0');
-            if (check.trim() === '0') break;
-            await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
-          } catch (_) { break; }
-        }
+        await new Promise(r => setTimeout(r, 150));
       } catch (_) {}
 
       // Wake display and unlock using standard human device settings
@@ -472,12 +469,32 @@ class ScrcpyEngine extends EventEmitter {
       logger.error(`[ScrcpyEngine ${this.serial}] Download from: https://github.com/Genymobile/scrcpy/releases/download/v2.4/scrcpy-server-v2.4`);
     }
 
-    // Let scrcpy automatically adapt to device screen size to prevent black screens
-    // Scrcpy will intelligently negotiate optimal resolution based on:
-    // - Device native resolution and aspect ratio
-    // - Hardware encoder capabilities (h264/h265)
-    // - Available RAM and CPU capacity
-    // This prevents black screens caused by resolution mismatches across different devices
+    // Macroblock alignment: ensure width and height scale cleanly without cropping
+    let maxSizeVal = '0'; // 0 = native unscaled resolution
+    if (this.screenWidth && this.screenHeight) {
+      const maxDim = Math.max(this.screenWidth, this.screenHeight);
+      const minDim = Math.min(this.screenWidth, this.screenHeight);
+      const aspect = minDim / maxDim;
+
+      // Find an optimal max dimension that keeps BOTH dimensions strictly divisible by 16
+      const candidates = [1600, 1560, 1440, 1360, 1280, 1200, 1152, 1080, 1024, 960, 800];
+      let bestSize = null;
+      for (const sz of candidates) {
+        if (sz > maxDim) continue;
+        const scaledMin = Math.round(sz * aspect);
+        if (sz % 16 === 0 && scaledMin % 16 === 0) {
+          bestSize = sz;
+          break;
+        }
+      }
+      if (maxDim <= 1600 && this.screenWidth % 8 === 0 && this.screenHeight % 8 === 0) {
+        maxSizeVal = '0'; // Native 1:1 crisp display
+      } else if (bestSize) {
+        maxSizeVal = String(bestSize);
+      } else {
+        maxSizeVal = maxDim > 1600 ? '1600' : '0';
+      }
+    }
 
     const scidArg = this._videoScidHex ? [`scid=${this._videoScidHex}`] : [];
     const args = [
@@ -489,9 +506,9 @@ class ScrcpyEngine extends EventEmitter {
       'audio=false',
       'control=true',
       'cleanup=false',
-      'video_bit_rate=8000000',
+      `max_size=${maxSizeVal || '0'}`,
+      'video_bit_rate=6000000',
       'max_fps=60',
-      'i_frame_interval=1',
     ];
 
     logger.info(`[ScrcpyEngine ${this.serial}] Spawning scrcpy server with args: ${args.slice(2).join(' ')}`);
@@ -560,6 +577,13 @@ class ScrcpyEngine extends EventEmitter {
 
       // Only restart if we weren't already in fallback mode
       if (!this._fallbackActive) {
+        this._crashCount = (this._crashCount || 0) + 1;
+        if (this._crashCount >= 4 && uptime < 5000) {
+          logger.warn(`[ScrcpyEngine ${this.serial}] Repeated crashes (${this._crashCount}) — activating screenrecord fallback`);
+          this._startScreenrecordFallback();
+          return;
+        }
+
         this._restartPending = true;
         // Back off longer if it died quickly (likely a startup error)
         const delay = uptime < 3000 ? 4000 : 1500;
@@ -676,12 +700,13 @@ class ScrcpyEngine extends EventEmitter {
     this.videoSocket.setNoDelay(true);
     this._pipeVideoToClients(this.videoSocket);
 
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 100));
 
     // tunnel_forward socket 2 = control socket
     logger.info(`[ScrcpyEngine ${this.serial}] Connecting control socket (socket 2)...`);
     this.controlSocket = await this._connectOne(this.videoPort);
     this.controlSocket.setNoDelay(true);
+    this.controlSocket.setKeepAlive(true, 1000);
 
     this.controlSocket.on('close', () => {
       logger.warn(`[ScrcpyEngine ${this.serial}] Control socket closed`);
@@ -703,24 +728,11 @@ class ScrcpyEngine extends EventEmitter {
     this._audioDebugLogs = this._audioDebugLogs || [];
 
     try {
-      // 1. Wake device screen
+      // 1. Wake device screen to ensure Android OS allows internal audio playback capture
       await this._adb(['shell', 'input', 'keyevent', '224']).catch(() => {});
 
-      // 2. Kill ALL scrcpy processes and wait until the abstract socket is confirmed free
+      // 2. Clean up any lingering zombie audio processes for this device session
       await this._adb(['shell', 'pkill', '-9', '-f', `scid=${scidHex}`]).catch(() => {});
-      await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
-      
-      // Poll until abstract socket is gone or timeout (max 3s)
-      for (let i = 0; i < 6; i++) {
-        await new Promise(r => setTimeout(r, 500));
-        try {
-          const check = await this._adb(['shell', `cat /proc/net/unix 2>/dev/null | grep scrcpy_${scidHex} | wc -l`]).catch(() => '0');
-          if (check.trim() === '0') break;
-          // Still bound — kill again
-          await this._adb(['shell', 'pkill', '-9', '-f', 'com.genymobile.scrcpy']).catch(() => {});
-        } catch (_) { break; }
-      }
-
       try { await this._adb(['forward', '--remove', `tcp:${audioPort}`]); } catch (_) {}
       await this._adb(['forward', `tcp:${audioPort}`, `localabstract:scrcpy_${scidHex}`]);
 
@@ -765,7 +777,7 @@ class ScrcpyEngine extends EventEmitter {
         proc.stderr.on('data', onData);
         setTimeout(() => {
           if (!isReady) { isReady = true; resolve(); }
-        }, 4000);
+        }, 2200);
       });
 
       proc.on('close', (code) => {
@@ -777,13 +789,17 @@ class ScrcpyEngine extends EventEmitter {
         }
         if (!this.isRunning || !this.enableAudio) return;
 
-        // If opus fails, skip aac (browser AAC WebCodecs is unreliable with scrcpy ADTS stream)
-        // Go straight to raw PCM which always works
+        // Adaptive fallback ladder for pure internal digital audio:
+        // 1. opus (output) -> 2. aac (output) -> 3. raw (output)
+        // (Never fall back to room mic, preventing static/ambient noise and cross-talk between phones)
         if (codec === 'opus') {
-          logger.info(`[ScrcpyAudio ${this.serial}] Opus failed — falling back to raw PCM audio...`);
+          logger.info(`[ScrcpyAudio ${this.serial}] Falling back from opus to aac audio encoder...`);
+          setTimeout(() => this._startDedicatedAudioStream('aac', 'output'), 1000);
+        } else if (codec === 'aac') {
+          logger.info(`[ScrcpyAudio ${this.serial}] Falling back from aac to raw PCM audio...`);
           setTimeout(() => this._startDedicatedAudioStream('raw', 'output'), 1000);
         } else {
-          // raw failed too — cooldown and retry opus
+          // Cooldown and retry opus internal output
           setTimeout(() => {
             if (this.isRunning && !this._audioProc) {
               this._startDedicatedAudioStream('opus', 'output');
@@ -796,8 +812,8 @@ class ScrcpyEngine extends EventEmitter {
       if (!this.isRunning || !this._audioProc) return;
 
       // Small delay to ensure Android abstract socket is open
-      await new Promise(r => setTimeout(r, 300));
-      this.audioSocket = await this._connectOne(audioPort, 50);
+      await new Promise(r => setTimeout(r, 200));
+      this.audioSocket = await this._connectOne(audioPort, 25);
       this.audioSocket.setNoDelay(true);
       this._pipeAudioToClients(this.audioSocket, audioPort, codec, audioSource);
       logger.info(`[ScrcpyEngine ${this.serial}] Dedicated audio stream active on port ${audioPort}`);
@@ -809,12 +825,9 @@ class ScrcpyEngine extends EventEmitter {
         this._audioProc = null;
       }
       if (codec === 'opus' && this.isRunning) {
-        setTimeout(() => this._startDedicatedAudioStream('raw', 'output'), 1500);
-      } else if (codec === 'raw' && this.isRunning) {
-        // raw also failed, retry opus after cooldown
-        setTimeout(() => {
-          if (this.isRunning && !this._audioProc) this._startDedicatedAudioStream('opus', 'output');
-        }, 8000);
+        setTimeout(() => this._startDedicatedAudioStream('aac', 'playback'), 1500);
+      } else if (codec === 'aac' && this.isRunning) {
+        setTimeout(() => this._startDedicatedAudioStream('raw', 'playback'), 1500);
       }
     }
   }
@@ -939,9 +952,9 @@ class ScrcpyEngine extends EventEmitter {
 
         const nalTypes = getNalUnitTypes(payload);
         const isSps = nalTypes.has(7);
-        const isIdr = nalTypes.has(5);
-        const isConfig = isSps || (ptsHigh & 0x80000000) !== 0;
-        const isKeyframe = isConfig || isIdr || isSps || nalTypes.has(8);
+        const isScrcpyKeyframe = (ptsHigh & 0x40000000) !== 0; // scrcpy FLAG_KEY_FRAME
+        const isIdr = isScrcpyKeyframe || nalTypes.has(5) || nalTypes.has(19);
+        const isConfig = isSps || (ptsHigh & 0x80000000) !== 0; // scrcpy FLAG_CONFIG
 
         if (isSps || (isConfig && !this._configPacket)) {
           this._configPacket = Buffer.from(payload);
@@ -996,7 +1009,7 @@ class ScrcpyEngine extends EventEmitter {
         }
 
         let broadcastPkt = payload;
-        if (isIdr || (isKeyframe && !isConfig)) {
+        if (isIdr) {
           this._keyframeTime = Date.now();
           if (this._configPacket && !isSps) {
             // Always prepend SPS/PPS config to IDR slice so every keyframe is 100% self-contained for WebCodecs
@@ -1008,7 +1021,7 @@ class ScrcpyEngine extends EventEmitter {
         }
 
         this._lastVideoPayload = broadcastPkt;
-        this._broadcastVideo(broadcastPkt, isKeyframe);
+        this._broadcastVideo(broadcastPkt, isIdr);
       }
 
       // Safety reset
@@ -1137,8 +1150,8 @@ class ScrcpyEngine extends EventEmitter {
   _broadcastVideo(payload, isKeyframe = false) {
     for (const ws of this.wsClients) {
       if (ws.readyState === 1) {
-        // Ultra-aggressive backpressure for instant response: only throttle above 64KB buffer
-        if (ws.bufferedAmount > 64 * 1024) {
+        // Backpressure protection: only throttle if socket buffer exceeds 384KB
+        if (ws.bufferedAmount > 384 * 1024) {
           ws._needsKeyframe = true;
           continue;
         }
@@ -1253,12 +1266,6 @@ class ScrcpyEngine extends EventEmitter {
     const finalY = Math.max(0, Math.min(targetH - 1, scaledY));
 
     if (!this.controlSocket || this.controlSocket.destroyed) {
-      // Only use fallback for tap actions, never for swipes/moves
-      if (action === 0 || action === 1) {
-        const physX = Math.round((finalX / targetW) * this.screenWidth);
-        const physY = Math.round((finalY / targetH) * this.screenHeight);
-        this._adb(['shell', 'input', 'tap', String(physX), String(physY)]).catch(() => {});
-      }
       return false;
     }
 
@@ -1277,8 +1284,8 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(0, 24);              // action_button = 0 (clean capacitive finger)
     buf.writeInt32BE(0, 28);              // buttons = 0 (no mouse emulation delay)
     try {
-      // Immediate write without any buffering
-      return this.controlSocket.write(buf);
+      this.controlSocket.write(buf);
+      return true;
     } catch (e) { 
       logger.warn(`[ScrcpyEngine ${this.serial}] touch write failed: ${e.message}`);
       return false; 
@@ -1295,9 +1302,6 @@ class ScrcpyEngine extends EventEmitter {
    */
   sendKeycode(action, keycode, repeat = 0, metastate = 0) {
     if (!this.controlSocket || this.controlSocket.destroyed) {
-      if (action === 0) {
-        this._adb(['shell', 'input', 'keyevent', String(keycode)]).catch(() => {});
-      }
       return false;
     }
     const buf = Buffer.allocUnsafe(14);
@@ -1307,11 +1311,9 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(repeat, 6);
     buf.writeInt32BE(metastate, 10);
     try { 
-      return this.controlSocket.write(buf);
+      this.controlSocket.write(buf); 
+      return true; 
     } catch (_) {
-      if (action === 0) {
-        this._adb(['shell', 'input', 'keyevent', String(keycode)]).catch(() => {});
-      }
       return false; 
     }
   }
@@ -1323,11 +1325,7 @@ class ScrcpyEngine extends EventEmitter {
    *   [5...]  UTF-8 text
    */
   sendText(text) {
-    if (!text || text.length === 0) return false;
-    
     if (!this.controlSocket || this.controlSocket.destroyed) {
-      const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
-      this._adb(['shell', 'input', 'text', escaped]).catch(() => {});
       return false;
     }
     const tb = Buffer.from(text, 'utf-8');
@@ -1336,10 +1334,9 @@ class ScrcpyEngine extends EventEmitter {
     buf.writeInt32BE(tb.length, 1);
     tb.copy(buf, 5);
     try { 
-      return this.controlSocket.write(buf);
+      this.controlSocket.write(buf); 
+      return true; 
     } catch (_) {
-      const escaped = text.replace(/(["'`$\\!& |;()<>])/g, '\\$1');
-      this._adb(['shell', 'input', 'text', escaped]).catch(() => {});
       return false; 
     }
   }
@@ -1367,6 +1364,9 @@ class ScrcpyEngine extends EventEmitter {
   _resetStreamState() {
     this._configPacket   = null;
     this._keyframeBuffer = null;
+    const now = Date.now();
+    if (this._lastResetTime && (now - this._lastResetTime < 3000)) return;
+    this._lastResetTime = now;
     // Notify all connected browsers to reset their decoders
     const resetMsg = Buffer.from(JSON.stringify({ type: 'stream_reset' }));
     for (const ws of this.wsClients) {
@@ -1378,6 +1378,9 @@ class ScrcpyEngine extends EventEmitter {
 
   async _restart() {
     if (!this.isRunning) return;
+    const now = Date.now();
+    if (this._lastRestartTime && (now - this._lastRestartTime < 2500)) return;
+    this._lastRestartTime = now;
     logger.info(`[ScrcpyEngine ${this.serial}] Self-healing device stream...`);
     // Clear stale keyframe cache so fresh SPS/PPS+IDR are sent after restart
     this._configPacket   = null;

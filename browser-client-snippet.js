@@ -23,8 +23,6 @@ class ScrcpyDashboardClient {
 
     this.ws = null;
     this.decoder = null;
-    this.decoderConfigured = false;
-    this.hasReceivedKeyframe = false;
     this.videoWidth = 1080;
     this.videoHeight = 1920;
     this.isMouseDown = false;
@@ -64,8 +62,12 @@ class ScrcpyDashboardClient {
       },
     });
 
-    // Start unconfigured - will configure on first SPS arrival with correct codec
-    this.decoderConfigured = false;
+    // Configure for H.264 Baseline/Main profile with zero latency
+    this.decoder.configure({
+      codec: 'avc1.42002A', // H.264 Baseline Profile Level 4.2
+      optimizeForLatency: true,
+      hardwareAcceleration: 'prefer-hardware',
+    });
   }
 
   /**
@@ -91,17 +93,6 @@ class ScrcpyDashboardClient {
             this.canvas.width = this.videoWidth;
             this.canvas.height = this.videoHeight;
             console.log(`[ScrcpyClient] Device metadata: ${meta.model} (${this.videoWidth}x${this.videoHeight})`);
-          } else if (meta.type === 'stream_reset') {
-            // Server restarting stream - reset decoder state and wait for new SPS+keyframe
-            console.log('[ScrcpyClient] Stream reset received, reinitializing decoder');
-            if (this.decoder && this.decoder.state !== 'closed') {
-              try { this.decoder.close(); } catch (_) {}
-            }
-            this.decoder = null;
-            this.decoderConfigured = false;
-            this.hasReceivedKeyframe = false;
-            this.frameIndex = 0;
-            this._initDecoder();
           }
         } catch (_) {}
         return;
@@ -135,76 +126,22 @@ class ScrcpyDashboardClient {
 
     // Detect if chunk contains an IDR Keyframe (NAL type 5) or SPS (NAL type 7)
     let isKeyframe = false;
-    let spsNalUnit = null;
-    let nalTypes = [];
-    for (let i = 0; i < Math.min(data.length - 4, 256); i++) {
+    for (let i = 0; i < Math.min(data.length - 4, 128); i++) {
       if (data[i] === 0 && data[i + 1] === 0) {
-        let nalStart = -1;
         let nalByte = -1;
         if (data[i + 2] === 1) {
-          nalStart = i + 3;
-          nalByte = data[nalStart];
+          nalByte = data[i + 3];
         } else if (data[i + 2] === 0 && data[i + 3] === 1) {
-          nalStart = i + 4;
-          nalByte = data[nalStart];
+          nalByte = data[i + 4];
         }
         if (nalByte !== -1) {
           const nalType = nalByte & 0x1f;
-          nalTypes.push(nalType);
-          if (nalType === 5) {
+          if (nalType === 5 || nalType === 7) {
             isKeyframe = true;
-          }
-          if (nalType === 7 && !spsNalUnit) {
-            // Extract SPS NAL for codec detection
-            let nalEnd = nalStart + 1;
-            while (nalEnd < data.length - 3) {
-              if (data[nalEnd] === 0 && data[nalEnd + 1] === 0 && (data[nalEnd + 2] === 1 || (data[nalEnd + 2] === 0 && data[nalEnd + 3] === 1))) {
-                break;
-              }
-              nalEnd++;
-            }
-            spsNalUnit = data.slice(nalStart, nalEnd);
+            break;
           }
         }
       }
-    }
-
-    console.log(`[DEBUG] Packet NAL types: [${nalTypes.join(',')}] isKeyframe=${isKeyframe} configured=${this.decoderConfigured} hasKeyframe=${this.hasReceivedKeyframe}`);
-
-    // Auto-configure decoder on first SPS arrival with device-specific codec string
-    if (spsNalUnit && !this.decoderConfigured && this.decoder.state === 'unconfigured') {
-      const codecString = this._parseSpsCodec(spsNalUnit);
-      if (codecString) {
-        try {
-          this.decoder.configure({
-            codec: codecString,
-            optimizeForLatency: true,
-            hardwareAcceleration: 'prefer-hardware',
-          });
-          this.decoderConfigured = true;
-          console.log(`[ScrcpyClient] Decoder configured with codec: ${codecString}`);
-          // Skip this packet - it may contain frames before encoder is stable
-          return;
-        } catch (err) {
-          console.error('[ScrcpyClient] Failed to configure decoder with codec:', codecString, err);
-          return;
-        }
-      }
-    }
-
-    // CRITICAL: Only start decoding after BOTH configuration AND first keyframe arrival
-    if (!this.decoderConfigured) {
-      console.log('[DEBUG] Skipping - not configured yet');
-      return;
-    }
-    if (!this.hasReceivedKeyframe) {
-      // Wait for first keyframe after configuration
-      if (!isKeyframe) {
-        console.log('[DEBUG] Skipping - waiting for first keyframe');
-        return;
-      }
-      this.hasReceivedKeyframe = true;
-      console.log('[ScrcpyClient] First keyframe received, starting decode pipeline');
     }
 
     try {
@@ -216,21 +153,8 @@ class ScrcpyDashboardClient {
         })
       );
     } catch (err) {
-      console.error('[ScrcpyClient] Decode error:', err.message, 'NAL types:', nalTypes);
+      console.warn('[ScrcpyClient] Decode error:', err.message);
     }
-  }
-
-  /**
-   * Parse H.264 SPS NAL unit to generate codec string (avc1.PPCCLL)
-   * PP = profile_idc, CC = constraint flags, LL = level_idc
-   */
-  _parseSpsCodec(spsNalUnit) {
-    if (spsNalUnit.length < 4) return null;
-    const profileIdc = spsNalUnit[1];
-    const constraintFlags = spsNalUnit[2];
-    const levelIdc = spsNalUnit[3];
-    const codecString = `avc1.${profileIdc.toString(16).padStart(2, '0')}${constraintFlags.toString(16).padStart(2, '0')}${levelIdc.toString(16).padStart(2, '0')}`;
-    return codecString;
   }
 
   /**
@@ -314,10 +238,7 @@ class ScrcpyDashboardClient {
    *   [28..31] buttons: i32BE (1 on DOWN/MOVE, 0 on UP)
    */
   sendTouchEvent(action, clientX, clientY, pressure = 1.0) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('[ScrcpyClient] WebSocket not ready, touch ignored');
-      return;
-    }
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     // Scale canvas client coordinates to internal device resolution
     const rect = this.canvas.getBoundingClientRect();
@@ -342,11 +263,7 @@ class ScrcpyDashboardClient {
     view.setInt32(24, 0, false);              // action_button = 0 (native touchscreen finger)
     view.setInt32(28, 0, false);              // buttons = 0 (direct touch, zero mouse emulation delay)
 
-    try {
-      this.ws.send(buffer);
-    } catch (e) {
-      console.error('[ScrcpyClient] Touch send failed:', e);
-    }
+    this.ws.send(buffer);
   }
 
   /**
@@ -425,18 +342,25 @@ class ScrcpyDashboardClient {
 
   /**
    * Attach touch and pointer listeners directly to the target canvas
-   * Ultra-low latency mode: send move events immediately without rAF batching for instant response.
-   * DOWN and UP events fire immediately with zero delay.
+   * Uses requestAnimationFrame coalescing on move events to match native 60/120Hz display refresh
+   * and prevent network packet queue lag. DOWN and UP events fire immediately.
    */
   _attachCanvasInputListeners() {
-    let lastMoveTime = 0;
-    const MOVE_THROTTLE = 8; // milliseconds between move events (120fps+ capable)
+    let pendingMove = null;
+    let moveRaf = null;
 
-    const sendMove = (clientX, clientY, pressure = 1.0) => {
-      const now = Date.now();
-      if (now - lastMoveTime >= MOVE_THROTTLE) {
-        this.sendTouchEvent(2, clientX, clientY, pressure);
-        lastMoveTime = now;
+    const flushPendingMove = () => {
+      if (pendingMove) {
+        this.sendTouchEvent(2, pendingMove.clientX, pendingMove.clientY, pendingMove.pressure);
+        pendingMove = null;
+      }
+      moveRaf = null;
+    };
+
+    const queueMove = (clientX, clientY, pressure = 1.0) => {
+      pendingMove = { clientX, clientY, pressure };
+      if (!moveRaf) {
+        moveRaf = requestAnimationFrame(flushPendingMove);
       }
     };
 
@@ -444,25 +368,32 @@ class ScrcpyDashboardClient {
     this.canvas.addEventListener('mousedown', (e) => {
       e.preventDefault();
       this.isMouseDown = true;
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = null; pendingMove = null; }
       this.sendTouchEvent(0, e.clientX, e.clientY); // 0 = DOWN (immediate)
     });
 
     window.addEventListener('mousemove', (e) => {
       if (!this.isMouseDown) return;
       e.preventDefault();
-      sendMove(e.clientX, e.clientY); // 2 = MOVE (throttled for smoothness)
+      queueMove(e.clientX, e.clientY); // 2 = MOVE (rAF synchronized)
     });
 
     window.addEventListener('mouseup', (e) => {
       if (!this.isMouseDown) return;
       e.preventDefault();
       this.isMouseDown = false;
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = null; }
+      if (pendingMove) {
+        this.sendTouchEvent(2, pendingMove.clientX, pendingMove.clientY, pendingMove.pressure);
+        pendingMove = null;
+      }
       this.sendTouchEvent(1, e.clientX, e.clientY); // 1 = UP (immediate)
     });
 
     // Touch Events for Mobile / Tablet rental clients
     this.canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = null; pendingMove = null; }
       if (e.touches.length > 0) {
         const touch = e.touches[0];
         this.sendTouchEvent(0, touch.clientX, touch.clientY, touch.force || 1.0);
@@ -473,12 +404,13 @@ class ScrcpyDashboardClient {
       e.preventDefault();
       if (e.touches.length > 0) {
         const touch = e.touches[0];
-        sendMove(touch.clientX, touch.clientY, touch.force || 1.0);
+        queueMove(touch.clientX, touch.clientY, touch.force || 1.0);
       }
     }, { passive: false });
 
     this.canvas.addEventListener('touchend', (e) => {
       e.preventDefault();
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = null; }
       if (e.changedTouches.length > 0) {
         const touch = e.changedTouches[0];
         this.sendTouchEvent(1, touch.clientX, touch.clientY, 0);

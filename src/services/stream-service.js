@@ -37,7 +37,6 @@ function findActiveSession(reqUdid, fallbackSerial) {
   if (!reqUdid) return activeServers.values().next().value || null;
 
   const raw = String(reqUdid).trim();
-
   // 1. Direct exact match
   if (activeServers.has(raw)) return activeServers.get(raw);
 
@@ -47,14 +46,19 @@ function findActiveSession(reqUdid, fallbackSerial) {
     if (k.toLowerCase() === lower) return v;
   }
 
-  // 3. OCR-safe normalized match (0/O and 1/I/L interchangeable)
+  // 3. OCR-safe normalized match (e.g. 0B0FP... vs OBOFP... where 0/O and 1/I/L are interchangeable)
   const normalize = s => s.toUpperCase().replace(/0/g, 'O').replace(/[1L]/g, 'I');
   const normReq = normalize(raw);
   for (const [k, v] of activeServers.entries()) {
     if (normalize(k) === normReq) return v;
   }
 
-  // 4. Fallback to fallbackSerial if valid — NO substring matching (causes wrong device routing)
+  // 4. Substring / partial match
+  for (const [k, v] of activeServers.entries()) {
+    if (k.includes(raw) || raw.includes(k)) return v;
+  }
+
+  // 5. Fallback to fallbackSerial if valid
   if (fallbackSerial && activeServers.has(fallbackSerial)) {
     return activeServers.get(fallbackSerial);
   }
@@ -115,6 +119,7 @@ function captureOneFrame(serial) {
 // ─── Shared control dispatcher ────────────────────────────────────────────────
 
 const touchGestures = new Map();
+const lastTextPerDevice = new Map();
 
 function get(data, key) {
   return typeof data.get === 'function' ? data.get(key) : data[key];
@@ -250,6 +255,16 @@ function handleControl(type, data, serial, engine) {
     }
   } else if (type === 'text') {
     const text = get(data, 'text') || '';
+    if (!text) return;
+
+    // Server-side debounce: ignore duplicate single-character bursts within 90ms for this serial
+    const now = Date.now();
+    const last = lastTextPerDevice.get(serial);
+    if (text.length === 1 && last && last.text === text && (now - last.time) < 90) {
+      return;
+    }
+    lastTextPerDevice.set(serial, { text, time: now });
+
     let sent = false;
     if (ctrlOk()) {
       sent = engine.sendText(text);
@@ -1088,7 +1103,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
     .btn-red:active{transform:scale(.92)}
     
     .vol-slider-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 0;width:100%;flex-shrink:0}
-    .volume-slider-v{-webkit-appearance:slider-vertical;appearance:slider-vertical;writing-mode:bt-lr;width:6px;height:65px;background:rgba(255,255,255,.15);border-radius:4px;outline:none;cursor:pointer;accent-color:#22c55e}
+    .volume-slider-v{writing-mode: vertical-lr; direction: rtl; width:6px;height:65px;background:rgba(255,255,255,.15);border-radius:4px;outline:none;cursor:pointer;accent-color:#22c55e}
 
     /* Mobile Bottom Navigation Bar (Hidden on desktop, prominent & pinned on mobile) */
     .mobile-nav-bar{
@@ -1694,10 +1709,27 @@ function buildPlayerHtml(serial, screenW, screenH) {
   // ── WebCodecs H264 Decoder (Auto-adapts to phones, tablets, and any hardware profile) ──
   let decoder = null;
   let decoderReady = false;
-  // Locked to H.264 High Profile Level 5.2 — covers all Android device encoders
-  // No codec switching, no SPS adaptation, strict WebCodecs WebSocket decoder only
   let hasKeyframe = false;
-  const FIXED_CODEC = 'avc1.640034';
+  let activeCodec = 'avc1.42E02A';
+  let cachedSpsPps = null;
+
+  function parseSpsCodec(u8) {
+    const limit = Math.min(u8.length - 4, 512);
+    for (let i = 0; i < limit; i++) {
+      if (u8[i] === 0 && u8[i+1] === 0) {
+        let start = -1;
+        if (u8[i+2] === 1 && (u8[i+3] & 0x1f) === 7) start = i + 4;
+        else if (u8[i+2] === 0 && u8[i+3] === 1 && (u8[i+4] & 0x1f) === 7) start = i + 5;
+        if (start >= 0 && start + 3 <= u8.length) {
+          const profile = u8[start].toString(16).padStart(2, '0');
+          const compat  = u8[start+1].toString(16).padStart(2, '0');
+          const level   = u8[start+2].toString(16).padStart(2, '0');
+          return 'avc1.' + profile + compat + level;
+        }
+      }
+    }
+    return null;
+  }
 
   function resetDecoder() {
     hasKeyframe = false;
@@ -1708,13 +1740,14 @@ function buildPlayerHtml(serial, screenW, screenH) {
     decoderReady = false;
   }
 
-  function initDecoder() {
+  function initDecoder(codecOverride) {
     resetDecoder();
     if (typeof VideoDecoder === 'undefined') {
-      console.warn('[Stream] WebCodecs VideoDecoder not available');
+      console.warn('[Stream] WebCodecs VideoDecoder not available in this browser');
       return false;
     }
     try {
+      const targetCodec = codecOverride || activeCodec || 'avc1.42E02A';
       decoder = new VideoDecoder({
         output: function(frame) {
           lastFrameReceivedTime = Date.now();
@@ -1724,43 +1757,50 @@ function buildPlayerHtml(serial, screenW, screenH) {
             canvas.width = w; canvas.height = h; nativeW = w; nativeH = h;
             canvas.style.aspectRatio = w + ' / ' + h;
             const dbgRes = document.getElementById('dbgRes');
-            if (dbgRes) dbgRes.textContent = w + 'x' + h;
+            if (dbgRes) dbgRes.textContent = w + ' x ' + h;
           }
-          ctx.imageSmoothingEnabled = false;
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
           ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
           frame.close();
           countFrame();
         },
         error: function(err) {
-          console.warn('[Stream] Decoder error — reinitialising:', err);
+          console.warn('[Stream] VideoDecoder error:', err);
           resetDecoder();
-          initDecoder();
+          initDecoder(activeCodec);
           send({ type: 'request_keyframe' });
+          send({ type: 'wake' });
         }
       });
       decoder.configure({
-        codec: FIXED_CODEC,
+        codec: targetCodec,
         optimizeForLatency: true,
         hardwareAcceleration: 'prefer-hardware'
       });
       decoderReady = true;
+      activeCodec = targetCodec;
       const dbgCodec = document.getElementById('dbgCodec');
-      if (dbgCodec) dbgCodec.textContent = 'WebCodecs H264 (WebSocket)';
+      if (dbgCodec) dbgCodec.textContent = targetCodec;
       return true;
     } catch (err) {
-      console.error('[Stream] VideoDecoder init failed:', err);
+      console.error('[Stream] Failed to init VideoDecoder with codec ' + (codecOverride || activeCodec) + ':', err);
       return false;
     }
   }
 
   function isH264Keyframe(u8) {
-    const limit = Math.min(u8.length - 4, 1024);
+    const limit = Math.min(u8.length - 4, 4096);
     for (let i = 0; i < limit; i++) {
       if (u8[i] === 0 && u8[i+1] === 0) {
         let ntype = -1;
-        if (u8[i+2] === 1 && i + 3 < u8.length)                        ntype = u8[i+3] & 0x1f;
-        else if (u8[i+2] === 0 && u8[i+3] === 1 && i + 4 < u8.length) ntype = u8[i+4] & 0x1f;
-        if (ntype === 5 || ntype === 7) return true;
+        if (u8[i+2] === 1 && i + 3 < u8.length) {
+          ntype = u8[i+3] & 0x1f;
+        } else if (u8[i+2] === 0 && u8[i+3] === 1 && i + 4 < u8.length) {
+          ntype = u8[i+4] & 0x1f;
+        }
+        // WebCodecs requires NAL 5 (IDR) to initialize decoded state before deltas
+        if (ntype === 5 || ntype === 19) return true;
       }
     }
     return false;
@@ -1851,10 +1891,11 @@ function buildPlayerHtml(serial, screenW, screenH) {
     };
 
     ws.onmessage = function(e) {
-      // JSON control messages arrive as strings; video/audio arrive as ArrayBuffer
-      if (typeof e.data === 'string') {
+      // JSON control messages (stream_reset, resolution_change, heartbeat, etc.)
+      if (typeof e.data === 'string' || e.data instanceof ArrayBuffer && e.data.byteLength > 0 && new Uint8Array(e.data)[0] === 0x7B) {
         try {
-          const msg = JSON.parse(e.data);
+          const txt = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
+          const msg = JSON.parse(txt);
           if (msg.type === 'heartbeat') {
             send({ type: 'pong' });
             return;
@@ -1863,24 +1904,32 @@ function buildPlayerHtml(serial, screenW, screenH) {
             const isFlip = nativeW && nativeH && ((nativeW > nativeH) !== (msg.width > msg.height));
             const isDiff = Math.abs((canvas.width || nativeW) - msg.width) > 16 || Math.abs((canvas.height || nativeH) - msg.height) > 16;
             if (isFlip || isDiff) {
+              console.log('[Stream] Dynamic orientation/resolution update: ' + msg.width + 'x' + msg.height);
               nativeW = msg.width;
               nativeH = msg.height;
               canvas.width = msg.width;
               canvas.height = msg.height;
               canvas.style.aspectRatio = msg.width + ' / ' + msg.height;
-              // Reinit decoder cleanly on resolution change
-              resetDecoder();
-              initDecoder();
-              send({ type: 'request_keyframe' });
+              // Cleanly reconfigure decoder for the new dimensions without forcing codec down to baseline
+              if (decoder && decoder.state !== 'closed') {
+                try {
+                  decoder.configure({
+                    codec: activeCodec || 'avc1.42E02A',
+                    optimizeForLatency: true,
+                    hardwareAcceleration: 'prefer-hardware'
+                  });
+                } catch (_) {}
+              }
               const dbgRes = document.getElementById('dbgRes');
-              if (dbgRes) dbgRes.textContent = msg.width + 'x' + msg.height;
+              if (dbgRes) dbgRes.textContent = msg.width + ' x ' + msg.height;
             }
             return;
           } else if (msg.type === 'stream_reset') {
-            // Reinit decoder for new stream but keep hasKeyframe — controls must stay working
-            if (decoder) { try { decoder.close(); } catch (_) {} decoder = null; }
-            decoderReady = false;
+            console.log('[Stream] Server stream reset — reinitialising decoder');
+            resetDecoder();
             initDecoder();
+            fbRunning = false;
+            lastFrameReceivedTime = 0;
             send({ type: 'request_keyframe' });
             return;
           } else if (msg.type === 'stream_revoked') {
@@ -1900,7 +1949,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
       const rawU8 = new Uint8Array(e.data);
       if (rawU8.length < 4) return;
 
-      // Handle tagged Audio binary frames — [0x41][codec][flags][payload]
+      // Handle tagged Audio binary frames — [0x41][codec][flags][payload] or [0x41][codec][payload]
       if (rawU8[0] === 0x41) {
         if (rawU8.length < 3) return;
         const codec = rawU8[1]; // 0x4F='O' opus, 0x43='C' aac, 0x52='R' raw
@@ -1913,11 +1962,11 @@ function buildPlayerHtml(serial, screenW, screenH) {
           payload = rawU8.subarray(2);
         }
 
-        if (codec === 0x4F) {        // Opus — primary codec, fully supported
+        if (codec === 0x4F) {        // Opus
           playOpusPacket(payload, isConfig);
-        } else if (codec === 0x43) { // AAC — skip silently, server should not send this anymore
-          return;
-        } else {                     // Raw PCM fallback
+        } else if (codec === 0x43) { // AAC
+          playAacPacket(payload, isConfig);
+        } else {                     // Raw PCM
           playRawPcm(payload);
         }
         return;
@@ -1961,28 +2010,63 @@ function buildPlayerHtml(serial, screenW, screenH) {
         return;
       }
 
-      // 3. Raw H264 NAL stream — strict WebCodecs WebSocket decoder, no codec switching
+      // 3. Raw H264 NAL stream via WebCodecs
+      // Auto-adapt decoder codec if incoming SPS specifies a different H264 profile/level
+      const spsCodec = parseSpsCodec(u8);
+      if (spsCodec) {
+        cachedSpsPps = u8.slice();
+      }
+      if (spsCodec && spsCodec !== activeCodec) {
+        console.log('[Stream] Adapting decoder to hardware stream profile: ' + spsCodec);
+        activeCodec = spsCodec;
+        hasKeyframe = false;
+        if (decoder && decoder.state !== 'closed') {
+          try {
+            decoder.configure({
+              codec: spsCodec,
+              optimizeForLatency: true,
+              hardwareAcceleration: 'prefer-hardware'
+            });
+            const dbgCodec = document.getElementById('dbgCodec');
+            if (dbgCodec) dbgCodec.textContent = spsCodec;
+          } catch (_) {
+            initDecoder(spsCodec);
+          }
+        }
+      }
+
       if (!decoderReady || !decoder || decoder.state === 'closed') {
-        if (!initDecoder()) return;
+        if (!initDecoder(activeCodec)) {
+          startFallback();
+          return;
+        }
       }
 
       const key = isH264Keyframe(u8);
       if (key) hasKeyframe = true;
       if (!hasKeyframe) {
-        // No keyframe yet — request one but DO NOT block: pass delta frames through
-        // so controls keep working while decoder is initialising
+        // Delta chunk received without an active keyframe — request keyframe immediately
         if (Date.now() - lastKeyframeReqTime > 1000) {
           lastKeyframeReqTime = Date.now();
           send({ type: 'request_keyframe' });
         }
-        // Still try to decode — WebCodecs will handle or drop gracefully
+        return;
+      }
+
+      let frameData = u8;
+      if (key && !spsCodec && cachedSpsPps) {
+        // Prepend cached SPS/PPS to IDR frame so Chromium has full Annex B parameter sets
+        const merged = new Uint8Array(cachedSpsPps.length + u8.length);
+        merged.set(cachedSpsPps, 0);
+        merged.set(u8, cachedSpsPps.length);
+        frameData = merged;
       }
 
       try {
         const chunk = new EncodedVideoChunk({
           type: key ? 'key' : 'delta',
           timestamp: performance.now() * 1000,
-          data: u8
+          data: frameData
         });
         decoder.decode(chunk);
       } catch (err) {
@@ -2025,21 +2109,20 @@ function buildPlayerHtml(serial, screenW, screenH) {
     // Disabled
   }
 
-  // ── Control: WS-only, JSON messages to server handleControl ───────────────
+  // ── Control: WS-only, never fetch ───────────────────────────────────────
   const ctrlQueue = [];
   function flushQueue() {
     while (ctrlQueue.length && ws && ws.readyState === 1)
       ws.send(JSON.stringify(ctrlQueue.shift()));
   }
-
   function send(data) {
     if (ws && ws.readyState === 1) {
       if (data.type === 'touch' && data.action === 2 && ws.bufferedAmount > 8192) {
-        return;
+        return; // Drop intermediate move events on buffer congestion to eliminate rubber-banding latency
       }
       ws.send(JSON.stringify(data));
     } else {
-      if (data.type === 'touch' && data.action === 2) return;
+      if (data.type === 'touch' && data.action === 2) return; // drop stale moves
       ctrlQueue.push(data);
       if (ctrlQueue.length > 8) ctrlQueue.splice(0, ctrlQueue.length - 8);
     }
@@ -2207,8 +2290,7 @@ function buildPlayerHtml(serial, screenW, screenH) {
   window.addEventListener('pointerup', releasePointer);
 
   canvas.addEventListener('click', (e) => {
-    // Skip click if pointerdown+up already sent the touch sequence
-    if (performance.now() - lastReleaseTime < 500) return;
+    if (performance.now() - lastReleaseTime < 350) return;
     const c = coords(e);
     send({ type: 'tap', x: c.x, y: c.y, width: c.w, height: c.h });
   });
@@ -2243,11 +2325,20 @@ function buildPlayerHtml(serial, screenW, screenH) {
   }, { passive:false });
 
   // ── Keyboard handling (Spacebar protection & full Android keys) ────────
+  let lastKeySent = '';
+  let lastKeyTime = 0;
+
   document.addEventListener('keydown', (e) => {
-    // Never intercept if typing into an input/textarea inside a modal dialog
+    // 1. Immediately drop browser auto-repeat events to prevent multiple duplicate characters
+    if (e.repeat) {
+      e.preventDefault();
+      return;
+    }
+
+    // 2. Never intercept if typing into an input/textarea inside a modal dialog
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
 
-    // Immediately blur any active button so Space cannot trigger click events on it
+    // 3. Immediately blur any active button so Space cannot trigger click events on it
     if (document.activeElement && document.activeElement !== document.body && document.activeElement !== canvas) {
       document.activeElement.blur();
     }
@@ -2281,6 +2372,11 @@ function buildPlayerHtml(serial, screenW, screenH) {
       key(22);
     } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
+      const now = Date.now();
+      // Debounce rapid duplicate keystrokes within 140ms to prevent ghost double typing
+      if (e.key === lastKeySent && now - lastKeyTime < 140) return;
+      lastKeySent = e.key;
+      lastKeyTime = now;
       send({ type:'text', text:e.key });
     }
   });
@@ -2300,12 +2396,17 @@ function buildPlayerHtml(serial, screenW, screenH) {
   });
 
   let lastNavKeyTime = 0;
+  let lastNavKeyCode = 0;
   function key(code) {
     const now = Date.now();
     if (code === 187 || code === 3 || code === 4) {
-      if (now - lastNavKeyTime < 400) return;
+      if (now - lastNavKeyTime < 350) return;
       lastNavKeyTime = now;
+    } else if (code === lastNavKeyCode && now - lastNavKeyTime < 120) {
+      return;
     }
+    lastNavKeyTime = now;
+    lastNavKeyCode = code;
     send({ type:'code', code });
   }
   function expandNotifications() { send({ type:'expand_notifications' }); }
@@ -2633,8 +2734,12 @@ async function startStreamServer(serial, port, aliasSerial) {
           return;
         }
         if (data.type === 'request_keyframe') {
+          // Send SPS/PPS config so decoder can initialize cleanly
           effectiveWsEngine.sendKeyframeToClient(ws);
           return;
+        }
+        if (data.type === 'wake' || data.type === 'refresh') {
+          // Forwarded to handleControl below
         }
         handleControl(data.type, data, effectiveWsSerial, effectiveWsEngine);
       } catch (_) {}
